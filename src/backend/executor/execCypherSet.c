@@ -214,6 +214,7 @@ ItemPointer
 updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 			   Datum elem_datum)
 {
+	EPQState   *epqstate = &mgstate->mt_epqstate;
 	EState	   *estate = mgstate->ps.state;
 	TupleTableSlot *elemTupleSlot = mgstate->elemTupleSlot;
 	Oid			relid;
@@ -263,6 +264,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 		   elemTupleSlot->tts_tupleDescriptor->natts * sizeof(bool));
 	ExecStoreVirtualTuple(elemTupleSlot);
 
+	lreplace:;
 	ExecMaterializeSlot(elemTupleSlot);
 	elemTupleSlot->tts_tableOid = RelationGetRelid(resultRelationDesc);
 
@@ -287,10 +289,77 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 		case TM_Ok:
 			break;
 		case TM_Updated:
-			/* TODO: A solution to concurrent update is needed. */
-			ereport(ERROR,
-					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-							errmsg("could not serialize access due to concurrent update")));
+			{
+				TupleTableSlot *inputslot;
+				TupleTableSlot *epqslot;
+
+				if (IsolationUsesXactSnapshot())
+					ereport(ERROR,
+							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+									errmsg("could not serialize access due to concurrent update")));
+
+				/*
+				 * Already know that we're going to need to do EPQ, so
+				 * fetch tuple directly into the right slot.
+				 */
+				inputslot = EvalPlanQualSlot(epqstate, resultRelationDesc,
+											 resultRelInfo->ri_RangeTableIndex);
+
+				result = table_tuple_lock(resultRelationDesc, ctid,
+										  estate->es_snapshot,
+										  inputslot, GetCurrentCommandId(true),
+										  lockmode, LockWaitBlock,
+										  TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
+										  &tmfd);
+
+				switch (result)
+				{
+					case TM_Ok:
+						Assert(tmfd.traversed);
+
+						epqslot = EvalPlanQual(epqstate,
+											   resultRelationDesc,
+											   resultRelInfo->ri_RangeTableIndex,
+											   inputslot);
+						if (TupIsNull(epqslot))
+							/* Tuple not passing quals anymore, exiting... */
+							return NULL;
+
+						elemTupleSlot = ExecFilterJunk(resultRelInfo->ri_junkFilter, epqslot);
+						goto lreplace;
+
+					case TM_Deleted:
+						/* tuple already deleted; nothing to do */
+						return NULL;
+
+					case TM_SelfModified:
+
+						/*
+						 * This can be reached when following an update
+						 * chain from a tuple updated by another session,
+						 * reaching a tuple that was already updated in
+						 * this transaction. If previously modified by
+						 * this command, ignore the redundant update,
+						 * otherwise error out.
+						 *
+						 * See also TM_SelfModified response to
+						 * table_tuple_update() above.
+						 */
+						if (tmfd.cmax != estate->es_output_cid)
+							ereport(ERROR,
+									(errcode(ERRCODE_TRIGGERED_DATA_CHANGE_VIOLATION),
+											errmsg("tuple to be updated was already modified by an operation triggered by the current command"),
+											errhint("Consider using an AFTER trigger instead of a BEFORE trigger to propagate changes to other rows.")));
+						return NULL;
+
+					default:
+						/* see table_tuple_lock call in ExecDelete() */
+						elog(ERROR, "unexpected table_tuple_lock status: %u",
+							 result);
+						return NULL;
+				}
+			}
+			break;
 		default:
 			elog(ERROR, "unrecognized heap_update status: %u", result);
 	}

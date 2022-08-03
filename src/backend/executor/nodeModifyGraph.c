@@ -87,6 +87,12 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 
 	mgstate->pattern = ExecInitGraphPattern(mgplan->pattern, mgstate);
 
+	EvalPlanQualInit(&mgstate->mt_epqstate, estate, NULL, NIL,
+					 mgplan->epqParam);
+	mgstate->mt_arowmarks = (List **) palloc0(sizeof(List *) * 1);
+	EvalPlanQualSetPlan(&mgstate->mt_epqstate, mgplan->subplan,
+						mgstate->mt_arowmarks[0]);
+
 	/* Check to see if we have RTEs to add to the es_range_table. */
 	if (mgplan->targets != NIL)
 	{

@@ -2592,6 +2592,8 @@ typedef struct ModifyGraphState
 	Tuplestorestate *tuplestorestate;
 	TupleTableSlot *(*execProc) (struct ModifyGraphState *pstate,
 								 TupleTableSlot *slot);
+	EPQState	mt_epqstate;	/* for evaluating EvalPlanQual rechecks */
+	List **mt_arowmarks;
 } ModifyGraphState;
 
 typedef struct Hash2SideState

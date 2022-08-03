@@ -2489,7 +2489,8 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 													parse->graph.eager,
 													parse->graph.pattern,
 													parse->graph.exprs,
-													parse->graph.sets);
+													parse->graph.sets,
+													assign_special_exec_param(root));
 		}
 		/*
 		 * If this is an INSERT/UPDATE/DELETE, and we're not being called from
