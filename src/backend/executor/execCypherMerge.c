@@ -18,6 +18,7 @@
 #include "utils/rel.h"
 #include "access/tableam.h"
 #include "pgstat.h"
+#include "access/xact.h"
 
 static bool isMatchedMergePattern(PlanState *planstate);
 static TupleTableSlot *createMergePath(ModifyGraphState *mgstate,
@@ -217,7 +218,7 @@ createMergeVertex(ModifyGraphState *mgstate, GraphVertex *gvertex,
 		ExecConstraints(resultRelInfo, insertSlot, estate);
 
 	table_tuple_insert(resultRelInfo->ri_RelationDesc, insertSlot,
-					   mgstate->modify_cid + MODIFY_CID_OUTPUT,
+					   GetCurrentCommandId(true),
 					   0, NULL);
 
 	if (resultRelInfo->ri_NumIndices > 0)
@@ -286,7 +287,7 @@ createMergeEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
 		ExecConstraints(resultRelInfo, insertSlot, estate);
 
 	table_tuple_insert(resultRelInfo->ri_RelationDesc, insertSlot,
-					   mgstate->modify_cid + MODIFY_CID_OUTPUT,
+					   GetCurrentCommandId(true),
 					   0, NULL);
 
 	if (resultRelInfo->ri_NumIndices > 0)

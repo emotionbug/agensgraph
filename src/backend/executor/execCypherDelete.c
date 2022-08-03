@@ -19,6 +19,7 @@
 #include "access/heapam.h"
 #include "pgstat.h"
 #include "utils/arrayaccess.h"
+#include "access/xact.h"
 
 static bool isDetachRequired(ModifyGraphState *mgstate);
 static void enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type);
@@ -152,9 +153,9 @@ deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type)
 
 	/* see ExecDelete() */
 	result = table_tuple_delete(resultRelationDesc, tid,
-						 mgstate->modify_cid + MODIFY_CID_OUTPUT,
-						estate->es_snapshot,
-						 estate->es_crosscheck_snapshot, true, &tmfd, false);
+								GetCurrentCommandId(true),
+								estate->es_snapshot,
+								estate->es_crosscheck_snapshot, true, &tmfd, false);
 
 	switch (result)
 	{

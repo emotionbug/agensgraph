@@ -34,7 +34,6 @@
 bool		enable_multiple_update = true;
 bool		auto_gather_graphmeta = false;
 
-
 static TupleTableSlot *ExecModifyGraph(PlanState *pstate);
 static void initGraphWRStats(ModifyGraphState *mgstate, GraphWriteOp op);
 static List *ExecInitGraphPattern(List *pattern, ModifyGraphState *mgstate);
@@ -50,13 +49,11 @@ static bool isEdgeArrayOfPath(List *exprs, char *variable);
 static void fitEStateRangeTable(EState* estate, int n);
 static void fitEStateRelations(EState *estate, int newsize);
 
-
 ModifyGraphState *
 ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 {
 	TupleTableSlot *slot;
 	ModifyGraphState *mgstate;
-	CommandId	svCid;
 
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
 
@@ -80,21 +77,9 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 	mgstate->done = false;
 	mgstate->child_done = false;
 	mgstate->eagerness = mgplan->eagerness;
-	mgstate->modify_cid = GetCurrentCommandId(false) +
-						  (mgplan->nr_modify * MODIFY_CID_MAX);
-
-	/*
-	 * Pass the lower limit of the CID of the current clause to the previous
-	 * clause as a default CID of it.
-	 */
-	svCid = estate->es_snapshot->curcid;
-	estate->es_snapshot->curcid = mgstate->modify_cid;
-
 	mgstate->subplan = ExecInitNode(mgplan->subplan, estate, eflags);
 	AssertArg(mgplan->operation != GWROP_MERGE ||
 			  IsA(mgstate->subplan, NestLoopState));
-
-	estate->es_snapshot->curcid = svCid;
 
 	mgstate->elemTupleSlot = ExecInitExtraTupleSlot(estate, NULL, &TTSOpsMinimalTuple);
 
@@ -280,6 +265,8 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 		default:
 			elog(ERROR, "unknown operation");
 	}
+
+    Increment_Estate_CommandId(estate);
 	return mgstate;
 }
 
@@ -298,30 +285,35 @@ ExecModifyGraph(PlanState *pstate)
 		for (;;)
 		{
 			TupleTableSlot *slot;
-			CommandId	svCid;
 
 			/* ExecInsertIndexTuples() uses per-tuple context. Reset it here. */
 			ResetPerTupleExprContext(estate);
 
 			/* pass lower bound CID to subplan */
-			svCid = estate->es_snapshot->curcid;
 
 			switch (plan->operation)
 			{
 				case GWROP_MERGE:
 				case GWROP_DELETE:
-					estate->es_snapshot->curcid = mgstate->modify_cid +
-												  MODIFY_CID_NLJOIN_MATCH;
+					Increment_Estate_CommandId(estate);
 					break;
 				default:
-					estate->es_snapshot->curcid =
-							mgstate->modify_cid + MODIFY_CID_LOWER_BOUND;
+					Decrement_Estate_CommandId(estate);
 					break;
 			}
 
 			slot = ExecProcNode(mgstate->subplan);
 
-			estate->es_snapshot->curcid = svCid;
+			switch (plan->operation)
+			{
+				case GWROP_MERGE:
+				case GWROP_DELETE:
+					Decrement_Estate_CommandId(estate);
+					break;
+				default:
+					Increment_Estate_CommandId(estate);
+					break;
+			}
 
 			if (TupIsNull(slot))
 				break;
@@ -349,6 +341,7 @@ ExecModifyGraph(PlanState *pstate)
 			}
 		}
 
+		CommandCounterIncrement();
 		mgstate->child_done = true;
 
 		if (mgstate->elemTable != NULL)
@@ -440,7 +433,6 @@ ExecEndModifyGraph(ModifyGraphState *mgstate)
 {
 	ResultRelInfo *resultRelInfo;
 	int			i;
-	CommandId	used_cid;
 
 	if (mgstate->tuplestorestate != NULL)
 		tuplestore_end(mgstate->tuplestorestate);
@@ -466,16 +458,7 @@ ExecEndModifyGraph(ModifyGraphState *mgstate)
 	ExecEndNode(mgstate->subplan);
 	ExecFreeExprContext(&mgstate->ps);
 
-	/*
-	 * ModifyGraph plan uses multi-level CommandId for supporting visibitliy
-	 * between cypher Clauses. Need to raise the cid to see the modifications
-	 * made by this ModifyGraph plan in the next command.
-	 */
-	used_cid = mgstate->modify_cid + MODIFY_CID_MAX;
-	while (used_cid > GetCurrentCommandId(true))
-	{
-		CommandCounterIncrement();
-	}
+	CommandCounterIncrement();
 }
 
 static void

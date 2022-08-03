@@ -30,15 +30,13 @@ typedef struct ModifiedElemEntry
 	} data;
 } ModifiedElemEntry;
 
-/* for visibility between Cypher clauses */
-typedef enum ModifyCid
-{
-	MODIFY_CID_LOWER_BOUND,		/* for previous clause */
-	MODIFY_CID_OUTPUT,			/* for CREATE, MERGE, DELETE */
-	MODIFY_CID_SET,				/* for SET, ON MATCH SET, ON CREATE SET */
-	MODIFY_CID_NLJOIN_MATCH,	/* for DELETE JOIN, MERGE JOIN */
-	MODIFY_CID_MAX
-} ModifyCid;
+#define Increment_Estate_CommandId(estate) \
+	((estate)->es_output_cid++);		   \
+    ((estate)->es_snapshot->curcid++)
+
+#define Decrement_Estate_CommandId(estate) \
+	((estate)->es_output_cid--);           \
+	((estate)->es_snapshot->curcid--)
 
 extern ResultRelInfo *getResultRelInfo(ModifyGraphState *mgstate, Oid relid);
 extern Datum findVertex(TupleTableSlot *slot, GraphVertex *gvertex, Graphid *vid);

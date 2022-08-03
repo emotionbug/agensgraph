@@ -2583,7 +2583,6 @@ typedef struct ModifyGraphState
 	Oid			graphid;
 	ResultRelInfo *resultRelations;
 	int			numResultRelations;
-	CommandId	modify_cid;
 	List	   *pattern;		/* graph pattern (list of paths) for CREATE
 								   with `es_prop_map` */
 	List	   *exprs;			/* expression state list for DELETE */

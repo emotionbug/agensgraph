@@ -17,6 +17,7 @@
 #include "utils/datum.h"
 #include "access/tableam.h"
 #include "utils/lsyscache.h"
+#include "access/xact.h"
 
 static TupleTableSlot *copyVirtualTupleTableSlot(TupleTableSlot *dstslot,
 												 TupleTableSlot *srcslot);
@@ -224,6 +225,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	TM_Result	result;
 	TM_FailureData tmfd;
 	bool		update_indexes;
+	Increment_Estate_CommandId(estate);
 
 	relid = get_labid_relid(mgstate->graphid,
 							GraphidGetLabid(DatumGetGraphid(gid)));
@@ -269,7 +271,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 		ExecConstraints(resultRelInfo, elemTupleSlot, estate);
 
 	result = table_tuple_update(resultRelationDesc, ctid, elemTupleSlot,
-								mgstate->modify_cid + MODIFY_CID_SET,
+								GetCurrentCommandId(true),
 								estate->es_snapshot,
 								estate->es_crosscheck_snapshot,
 								true /* wait for commit */ ,
@@ -301,6 +303,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 
 	estate->es_result_relation_info = savedResultRelInfo;
 
+	Decrement_Estate_CommandId(estate);
 	return &elemTupleSlot->tts_tid;
 }
 

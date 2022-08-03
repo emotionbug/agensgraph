@@ -17,6 +17,7 @@
 #include "utils/rel.h"
 #include "access/tableam.h"
 #include "pgstat.h"
+#include "access/xact.h"
 
 static TupleTableSlot *createPath(ModifyGraphState *mgstate, GraphPath *path,
 								  TupleTableSlot *slot);
@@ -202,7 +203,7 @@ createVertex(ModifyGraphState *mgstate, GraphVertex *gvertex, Graphid *vid,
 	 * insert the tuple normally
 	 */
 	table_tuple_insert(resultRelInfo->ri_RelationDesc, elemTupleSlot,
-					   mgstate->modify_cid + MODIFY_CID_OUTPUT,
+					   GetCurrentCommandId(true),
 					   0, NULL);
 
 	/* insert index entries for the tuple */
@@ -268,7 +269,7 @@ createEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
 		ExecConstraints(resultRelInfo, elemTupleSlot, estate);
 
 	table_tuple_insert(resultRelInfo->ri_RelationDesc, elemTupleSlot,
-					   mgstate->modify_cid + MODIFY_CID_OUTPUT,
+					   GetCurrentCommandId(true),
 					   0, NULL);
 
 	if (resultRelInfo->ri_NumIndices > 0)
