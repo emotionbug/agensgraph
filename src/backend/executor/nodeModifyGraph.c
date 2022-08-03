@@ -47,6 +47,16 @@ typedef struct ModifiedElemEntry
 	} data;
 } ModifiedElemEntry;
 
+/* for visibility between Cypher clauses */
+typedef enum ModifyCid
+{
+	MODIFY_CID_LOWER_BOUND,		/* for previous clause */
+	MODIFY_CID_OUTPUT,			/* for CREATE, MERGE, DELETE */
+	MODIFY_CID_SET,				/* for SET, ON MATCH SET, ON CREATE SET */
+	MODIFY_CID_NLJOIN_MATCH,	/* for DELETE JOIN, MERGE JOIN */
+	MODIFY_CID_MAX
+} ModifyCid;
+
 static TupleTableSlot *ExecModifyGraph(PlanState *pstate);
 static void initGraphWRStats(ModifyGraphState *mgstate, GraphWriteOp op);
 static List *ExecInitGraphPattern(List *pattern, ModifyGraphState *mgstate);
@@ -358,8 +368,19 @@ ExecModifyGraph(PlanState *pstate)
 
 			/* pass lower bound CID to subplan */
 			svCid = estate->es_snapshot->curcid;
-			estate->es_snapshot->curcid =
-					mgstate->modify_cid + MODIFY_CID_LOWER_BOUND;
+
+			switch (plan->operation)
+			{
+				case GWROP_MERGE:
+				case GWROP_DELETE:
+					estate->es_snapshot->curcid = mgstate->modify_cid +
+												  MODIFY_CID_NLJOIN_MATCH;
+					break;
+				default:
+					estate->es_snapshot->curcid =
+							mgstate->modify_cid + MODIFY_CID_LOWER_BOUND;
+					break;
+			}
 
 			slot = ExecProcNode(mgstate->subplan);
 
@@ -965,7 +986,11 @@ ExecDeleteGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 	return (plan->last ? NULL : slot);
 }
 
-/* tricky but efficient */
+/*
+ * isDetachRequired
+ * 
+ * This function is related to add_paths_for_cdelete.
+ */
 static bool
 isDetachRequired(ModifyGraphState *mgstate)
 {
