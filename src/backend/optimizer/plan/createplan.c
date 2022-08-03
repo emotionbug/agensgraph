@@ -4708,9 +4708,8 @@ create_modifygraph_plan(PlannerInfo *root, ModifyGraphPath *best_path)
 
 	apply_tlist_labeling(subplan->targetlist, root->processed_tlist);
 
-	plan = make_modifygraph(root, best_path->operation,
-							best_path->last, best_path->targets, subplan,
-							best_path->nr_modify, best_path->detach,
+	plan = make_modifygraph(root, best_path->operation, best_path->last,
+							subplan, best_path->nr_modify, best_path->detach,
 							best_path->eagerness, best_path->pattern,
 							best_path->exprs, best_path->sets);
 
@@ -7337,16 +7336,14 @@ is_projection_capable_plan(Plan *plan)
  *	  Build a ModifyGraph plan node
  */
 ModifyGraph *
-make_modifygraph(PlannerInfo *root, GraphWriteOp operation,
-				 bool last, List *targets, Plan *subplan, uint32 nr_modify,
-				 bool detach, bool eagerness, List *pattern, List *exprs,
-				 List *sets)
+make_modifygraph(PlannerInfo *root, GraphWriteOp operation, bool last,
+				 Plan *subplan, uint32 nr_modify, bool detach,
+				 bool eagerness, List *pattern, List *exprs, List *sets)
 {
 	ModifyGraph *node = makeNode(ModifyGraph);
 
 	node->operation = operation;
 	node->last = last;
-	node->targets = targets;
 	node->subplan = subplan;
 	node->nr_modify = nr_modify;
 	node->detach = detach;
@@ -7354,8 +7351,6 @@ make_modifygraph(PlannerInfo *root, GraphWriteOp operation,
 	node->pattern = pattern;
 	node->exprs = exprs;
 	node->sets = sets;
-	node->ert_base_index = -1;
-	node->ert_rtes_added = -1;
 
 	return node;
 }

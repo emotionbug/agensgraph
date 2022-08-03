@@ -3712,9 +3712,9 @@ adjust_limit_rows_costs(double *rows,	/* in/out parameter */
 
 ModifyGraphPath *
 create_modifygraph_path(PlannerInfo *root, RelOptInfo *rel,
-						GraphWriteOp operation, bool last, List *targets,
-						Path *subpath, uint32 nr_modify, bool detach,
-						bool eager, List *pattern, List *exprs, List *sets)
+						GraphWriteOp operation, bool last, Path *subpath,
+						uint32 nr_modify, bool detach, bool eager,
+						List *pattern, List *exprs, List *sets)
 {
 	ModifyGraphPath *pathnode = makeNode(ModifyGraphPath);
 
@@ -3732,7 +3732,6 @@ create_modifygraph_path(PlannerInfo *root, RelOptInfo *rel,
 
 	pathnode->operation = operation;
 	pathnode->last = last;
-	pathnode->targets = targets;
 	pathnode->subpath = subpath;
 	pathnode->nr_modify = nr_modify;
 	pathnode->detach = detach;

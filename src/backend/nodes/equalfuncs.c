@@ -1093,7 +1093,6 @@ _equalQuery(const Query *a, const Query *b)
 
 	COMPARE_SCALAR_FIELD(graph.writeOp);
 	COMPARE_SCALAR_FIELD(graph.last);
-	COMPARE_NODE_FIELD(graph.targets);
 	COMPARE_SCALAR_FIELD(graph.nr_modify);
 	COMPARE_SCALAR_FIELD(graph.detach);
 	COMPARE_SCALAR_FIELD(graph.eager);

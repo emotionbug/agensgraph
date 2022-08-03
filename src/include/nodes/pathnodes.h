@@ -1863,7 +1863,6 @@ typedef struct ModifyGraphPath
 	Path		path;
 	GraphWriteOp operation;
 	bool		last;			/* is this for the last clause? */
-	List	   *targets;		/* relation Oid's of target labels */
 	Path	   *subpath;		/* Path producing source data */
 	uint32		nr_modify;		/* number of clauses that modifies graph
 								   before this */

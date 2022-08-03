@@ -343,9 +343,11 @@ extern DijkstraPath *create_dijkstra_path(PlannerInfo *root, RelOptInfo *rel,
 extern EagerPath *create_eager_path(RelOptInfo *rel, GraphWriteOp operation,
 				  Path *subpath);
 extern ModifyGraphPath *create_modifygraph_path(PlannerInfo *root,
-						RelOptInfo *rel, GraphWriteOp operation,
-						bool last, List *targets, Path *subpath,
-						uint32 nr_modify, bool detach, bool eager,
-						List *pattern, List *exprs, List *sets);
+												RelOptInfo *rel,
+												GraphWriteOp operation,
+												bool last, Path *subpath,
+												uint32 nr_modify, bool detach,
+												bool eager, List *pattern,
+												List *exprs, List *sets);
 
 #endif							/* PATHNODE_H */

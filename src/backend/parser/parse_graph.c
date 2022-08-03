@@ -292,7 +292,9 @@ static List *extractEdgesExpr(ParseState *pstate, List *exprlist,
 static char *getDeleteTargetName(ParseState *pstate, Node *expr);
 
 /* graph write */
-static List *findAllModifiedLabels(Query *qry);
+static List *addRangeTableAllModifiedLabels(ParseState *pstate, Query *qry,
+											List *targets);
+static void addRangeTableLabels(ParseState *pstate, List *targets);
 static Oid find_target_label(Node *node, Query *qry);
 static bool find_target_label_walker(Node *node,
 									 find_target_label_context *ctx);
@@ -768,7 +770,7 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 
 	qry->graph.pattern = transformCreatePattern(pstate, cpath,
 												&qry->targetList);
-	qry->graph.targets = pstate->p_target_labels;
+	addRangeTableLabels(pstate, pstate->p_target_labels);
 	qry->graph.nr_modify = pstate->p_nr_modify_clause++;
 
 	qry->targetList = (List *) resolve_future_vertex(pstate,
@@ -877,7 +879,7 @@ transformCypherDeleteClause(ParseState *pstate, CypherClause *clause)
 
 	assign_query_eager(qry);
 
-	findAllModifiedLabels(qry);
+	addRangeTableAllModifiedLabels(pstate, qry, NIL);
 
 	return qry;
 }
@@ -939,7 +941,7 @@ transformCypherSetClause(ParseState *pstate, CypherClause *clause)
 
 	assign_query_eager(qry);
 
-	findAllModifiedLabels(qry);
+	addRangeTableAllModifiedLabels(pstate, qry, NIL);
 
 	return qry;
 }
@@ -974,7 +976,6 @@ transformCypherMergeClause(ParseState *pstate, CypherClause *clause)
 	prev_rte = rt_fetch(1, nsitem->p_rte->subquery->rtable);
 	qry->graph.pattern = transformMergeCreate(pstate, detail->pattern,
 											  prev_rte, qry->targetList);
-	qry->graph.targets = pstate->p_target_labels;
 
 	qry->graph.sets = transformMergeOnSet(pstate, detail->sets);
 	qry->graph.nr_modify = pstate->p_nr_modify_clause++;
@@ -996,7 +997,7 @@ transformCypherMergeClause(ParseState *pstate, CypherClause *clause)
 
 	assign_query_eager(qry);
 
-	findAllModifiedLabels(qry);
+	addRangeTableAllModifiedLabels(pstate, qry, pstate->p_target_labels);
 
 	return qry;
 }
@@ -4941,7 +4942,7 @@ transformDeleteEdges(ParseState *pstate, Node *parseTree)
 
 	assign_query_collations(pstate, qry);
 
-	findAllModifiedLabels(qry);
+	addRangeTableAllModifiedLabels(pstate, qry, NIL);
 
 	return qry;
 }
@@ -5335,8 +5336,9 @@ getDeleteTargetName(ParseState *pstate, Node *expr)
 }
 
 static List *
-findAllModifiedLabels(Query *qry)
+addRangeTableAllModifiedLabels(ParseState *pstate, Query *qry, List *targets)
 {
+	List	   *new_targets = NIL;
 	List	   *label_oids = NIL;
 	ListCell   *lc;
 
@@ -5364,16 +5366,37 @@ findAllModifiedLabels(Query *qry)
 		}
 	}
 
+	new_targets = targets;
 	foreach(lc, label_oids)
 	{
 		Oid			relid = lfirst_oid(lc);
 		List	   *child_oids;
 
 		child_oids = find_all_inheritors(relid, AccessShareLock, NULL);
-		qry->graph.targets = list_union_oid(qry->graph.targets, child_oids);
+		new_targets = list_union_oid(new_targets, child_oids);
 	}
 
-	return qry->graph.targets;
+	addRangeTableLabels(pstate, new_targets);
+
+	return new_targets;
+}
+
+static void
+addRangeTableLabels(ParseState *pstate, List *targets)
+{
+	ListCell *lc;
+	foreach(lc, targets)
+	{
+		Oid			relid = lfirst_oid(lc);
+		Relation relation = table_open(relid, AccessShareLock);
+		addRangeTableEntryForRelation(pstate,
+									  relation,
+									  AccessShareLock,
+									  NULL,
+									  false,
+									  false);
+		table_close(relation, NoLock);
+	}
 }
 
 static Oid
