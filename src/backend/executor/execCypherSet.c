@@ -225,7 +225,6 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	TM_Result	result;
 	TM_FailureData tmfd;
 	bool		update_indexes;
-	Increment_Estate_CommandId(estate);
 
 	relid = get_labid_relid(mgstate->graphid,
 							GraphidGetLabid(DatumGetGraphid(gid)));
@@ -303,7 +302,6 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 
 	estate->es_result_relation_info = savedResultRelInfo;
 
-	Decrement_Estate_CommandId(estate);
 	return &elemTupleSlot->tts_tid;
 }
 

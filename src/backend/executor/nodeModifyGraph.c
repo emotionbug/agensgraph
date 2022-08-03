@@ -289,8 +289,6 @@ ExecModifyGraph(PlanState *pstate)
 			/* ExecInsertIndexTuples() uses per-tuple context. Reset it here. */
 			ResetPerTupleExprContext(estate);
 
-			/* pass lower bound CID to subplan */
-
 			switch (plan->operation)
 			{
 				case GWROP_MERGE:
