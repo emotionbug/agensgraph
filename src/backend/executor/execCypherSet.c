@@ -325,7 +325,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 							/* Tuple not passing quals anymore, exiting... */
 							return NULL;
 
-						elemTupleSlot = ExecFilterJunk(resultRelInfo->ri_junkFilter, epqslot);
+						elemTupleSlot = epqslot;
 						goto lreplace;
 
 					case TM_Deleted:
