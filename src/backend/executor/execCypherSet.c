@@ -27,6 +27,202 @@ static void findAndReflectNewestValue(ModifyGraphState *mgstate,
 static void enterSetPropTable(ModifyGraphState *mgstate, Datum gid,
 							  Datum newelem);
 
+static ItemPointer
+updateElemProp2(ModifyGraphState *mgstate, GraphSetProp *gsp, Oid elemtype,
+				Datum gid, Datum elem_datum)
+{
+	ExprContext *econtext = mgstate->ps.ps_ExprContext;
+	EPQState   *epqstate = &mgstate->mt_epqstate;
+	EState	   *estate = mgstate->ps.state;
+	TupleTableSlot *elemTupleSlot = mgstate->elemTupleSlot;
+	Oid			relid;
+	ItemPointer	ctid;
+	ResultRelInfo *resultRelInfo;
+	ResultRelInfo *savedResultRelInfo;
+	Relation	resultRelationDesc;
+	LockTupleMode lockmode;
+	TM_Result	result;
+	TM_FailureData tmfd;
+	bool		update_indexes;
+	
+	relid = get_labid_relid(mgstate->graphid,
+							GraphidGetLabid(DatumGetGraphid(gid)));
+	resultRelInfo = getResultRelInfo(mgstate, relid);
+
+	savedResultRelInfo = estate->es_result_relation_info;
+	estate->es_result_relation_info = resultRelInfo;
+	resultRelationDesc = resultRelInfo->ri_RelationDesc;
+
+	/*
+	 * Create a tuple to store. Attributes of vertex/edge label are not the
+	 * same with those of vertex/edge.
+	 */
+	lreplace2:;
+	elog(INFO, "????");
+	ExecClearTuple(elemTupleSlot);
+	ExecSetSlotDescriptor(elemTupleSlot,
+						  RelationGetDescr(resultRelationDesc));
+	if (elemtype == VERTEXOID)
+	{
+		elemTupleSlot->tts_values[0] = gid;
+		elemTupleSlot->tts_values[1] = getVertexPropDatum(elem_datum);
+
+		ctid = (ItemPointer) DatumGetPointer(getVertexTidDatum(elem_datum));
+	}
+	else
+	{
+		Assert(elemtype == EDGEOID);
+
+		elemTupleSlot->tts_values[0] = gid;
+		elemTupleSlot->tts_values[1] = getEdgeStartDatum(elem_datum);
+		elemTupleSlot->tts_values[2] = getEdgeEndDatum(elem_datum);
+		elemTupleSlot->tts_values[3] = getEdgePropDatum(elem_datum);
+
+		ctid = (ItemPointer) DatumGetPointer(getEdgeTidDatum(elem_datum));
+	}
+	MemSet(elemTupleSlot->tts_isnull, false,
+		   elemTupleSlot->tts_tupleDescriptor->natts * sizeof(bool));
+	ExecStoreVirtualTuple(elemTupleSlot);
+
+	ExecMaterializeSlot(elemTupleSlot);
+	elemTupleSlot->tts_tableOid = RelationGetRelid(resultRelationDesc);
+
+	if (resultRelationDesc->rd_att->constr)
+		ExecConstraints(resultRelInfo, elemTupleSlot, estate);
+
+	result = table_tuple_update(resultRelationDesc, ctid, elemTupleSlot,
+								GetCurrentCommandId(true),
+								estate->es_snapshot,
+								estate->es_crosscheck_snapshot,
+								true /* wait for commit */ ,
+								&tmfd, &lockmode, &update_indexes);
+
+	switch (result)
+	{
+		case TM_SelfModified:
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+							errmsg("graph element(%hu," UINT64_FORMAT ") has been SET multiple times",
+							GraphidGetLabid(DatumGetGraphid(gid)),
+							GraphidGetLocid(DatumGetGraphid(gid)))));
+		case TM_Ok:
+			break;
+		case TM_Updated:
+		{
+			bool	isnull;
+			TupleTableSlot *inputslot;
+			TupleTableSlot *epqslot;
+			Datum		_tid;
+			Datum _elem_datum;
+			Datum _expr_datum;
+
+			if (IsolationUsesXactSnapshot())
+				ereport(ERROR,
+						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+								errmsg("could not serialize access due to concurrent update")));
+
+			/*
+			 * Already know that we're going to need to do EPQ, so
+			 * fetch tuple directly into the right slot.
+			 */
+			inputslot = EvalPlanQualSlot(epqstate, resultRelationDesc,
+										 resultRelInfo->ri_RangeTableIndex);
+
+			result = table_tuple_lock(resultRelationDesc, ctid,
+									  estate->es_snapshot,
+									  inputslot, GetCurrentCommandId(true),
+									  lockmode, LockWaitBlock,
+									  TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
+									  &tmfd);
+
+			switch (result)
+			{
+				case TM_Ok:
+					Assert(tmfd.traversed);
+
+					epqslot = EvalPlanQual(epqstate,
+										   resultRelationDesc,
+										   resultRelInfo->ri_RangeTableIndex,
+										   inputslot);
+					if (TupIsNull(epqslot))
+						/* Tuple not passing quals anymore, exiting... */
+						return NULL;
+
+					copyVirtualTupleTableSlot(elemTupleSlot, epqslot);
+
+					_elem_datum = ExecEvalExpr(gsp->es_elem, econtext, &isnull);
+					if (isnull)
+						ereport(ERROR,
+								(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+										errmsg("updating NULL is not allowed")));
+					/* evaluate SET expression */
+					_tid = PointerGetDatum(&elemTupleSlot->tts_tid);
+					if (elemtype == VERTEXOID)
+					{
+						gid = getVertexIdDatum(_elem_datum);
+					}
+					else
+					{
+						Assert(elemtype == EDGEOID);
+
+						gid = getEdgeIdDatum(_elem_datum);
+					}
+
+					_expr_datum = ExecEvalExpr(gsp->es_expr, econtext, &isnull);
+					if (isnull)
+						ereport(ERROR,
+								(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+										errmsg("property map cannot be NULL")));
+					elem_datum = makeModifiedElem(_elem_datum, elemtype, gid,
+												  _expr_datum, _tid);
+					goto lreplace2;
+
+				case TM_Deleted:
+					/* tuple already deleted; nothing to do */
+					return NULL;
+
+				case TM_SelfModified:
+
+					/*
+					 * This can be reached when following an update
+					 * chain from a tuple updated by another session,
+					 * reaching a tuple that was already updated in
+					 * this transaction. If previously modified by
+					 * this command, ignore the redundant update,
+					 * otherwise error out.
+					 *
+					 * See also TM_SelfModified response to
+					 * table_tuple_update() above.
+					 */
+					if (tmfd.cmax != estate->es_output_cid)
+						ereport(ERROR,
+								(errcode(ERRCODE_TRIGGERED_DATA_CHANGE_VIOLATION),
+										errmsg("tuple to be updated was already modified by an operation triggered by the current command"),
+										errhint("Consider using an AFTER trigger instead of a BEFORE trigger to propagate changes to other rows.")));
+					return NULL;
+
+				default:
+					/* see table_tuple_lock call in ExecDelete() */
+					elog(ERROR, "unexpected table_tuple_lock status: %u",
+						 result);
+					return NULL;
+			}
+		}
+			break;
+		default:
+			elog(ERROR, "unrecognized heap_update status: %u", result);
+	}
+
+	if (resultRelInfo->ri_NumIndices > 0 && update_indexes)
+		ExecInsertIndexTuples(elemTupleSlot, estate, false, NULL, NIL);
+
+	graphWriteStats.updateProperty++;
+
+	estate->es_result_relation_info = savedResultRelInfo;
+
+	return &elemTupleSlot->tts_tid;
+}
+
 void
 AssignSetKinds(ModifyGraphState *mgstate, GSPKind kind, TupleTableSlot *slot)
 {
@@ -89,9 +285,9 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 		 * Reflect newest value all types of scantuple
 		 * before evaluating expression.
 		 */
-		findAndReflectNewestValue(mgstate, econtext->ecxt_scantuple, free_slot);
-		findAndReflectNewestValue(mgstate, econtext->ecxt_innertuple, free_slot);
-		findAndReflectNewestValue(mgstate, econtext->ecxt_outertuple, free_slot);
+//		findAndReflectNewestValue(mgstate, econtext->ecxt_scantuple, free_slot);
+//		findAndReflectNewestValue(mgstate, econtext->ecxt_innertuple, free_slot);
+//		findAndReflectNewestValue(mgstate, econtext->ecxt_outertuple, free_slot);
 
 		/* get original graph element */
 		elem_datum = ExecEvalExpr(gsp->es_elem, econtext, &isNull);
@@ -127,7 +323,7 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 		if (mgstate->elemTable)
 			enterSetPropTable(mgstate, gid, newelem);
 		else
-			updateElemProp(mgstate, elemtype, gid, newelem);
+			updateElemProp2(mgstate, gsp, elemtype, gid, newelem);
 
 		setSlotValueByName(result, newelem, gsp->variable);
 		/*
@@ -214,6 +410,7 @@ ItemPointer
 updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 			   Datum elem_datum)
 {
+	ExprContext *econtext = mgstate->ps.ps_ExprContext;
 	EPQState   *epqstate = &mgstate->mt_epqstate;
 	EState	   *estate = mgstate->ps.state;
 	TupleTableSlot *elemTupleSlot = mgstate->elemTupleSlot;
@@ -241,7 +438,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	 */
 	ExecClearTuple(elemTupleSlot);
 	ExecSetSlotDescriptor(elemTupleSlot,
-						  RelationGetDescr(resultRelInfo->ri_RelationDesc));
+						  RelationGetDescr(resultRelationDesc));
 	if (elemtype == VERTEXOID)
 	{
 		elemTupleSlot->tts_values[0] = gid;
@@ -265,6 +462,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	ExecStoreVirtualTuple(elemTupleSlot);
 
 	lreplace:;
+	elog(INFO,"???");
 	ExecMaterializeSlot(elemTupleSlot);
 	elemTupleSlot->tts_tableOid = RelationGetRelid(resultRelationDesc);
 

@@ -226,25 +226,26 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 
 	initGraphWRStats(mgstate, mgplan->operation);
 
-	if (mgstate->eagerness ||
-		(mgstate->sets != NIL && enable_multiple_update) ||
-		mgstate->exprs != NIL)
-	{
-		HASHCTL ctl;
-
-		memset(&ctl, 0, sizeof(ctl));
-		ctl.keysize = sizeof(Graphid);
-		ctl.entrysize = sizeof(ModifiedElemEntry);
-		ctl.hcxt = CurrentMemoryContext;
-
-		mgstate->elemTable =
-				hash_create("modified object table", 128, &ctl,
-							HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	}
-	else
-	{
-		mgstate->elemTable = NULL;
-	}
+	mgstate->elemTable = NULL;
+//	if (mgstate->eagerness ||
+//		(mgstate->sets != NIL && enable_multiple_update) ||
+//		mgstate->exprs != NIL)
+//	{
+//		HASHCTL ctl;
+//
+//		memset(&ctl, 0, sizeof(ctl));
+//		ctl.keysize = sizeof(Graphid);
+//		ctl.entrysize = sizeof(ModifiedElemEntry);
+//		ctl.hcxt = CurrentMemoryContext;
+//
+//		mgstate->elemTable =
+//				hash_create("modified object table", 128, &ctl,
+//							HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+//	}
+//	else
+//	{
+//		mgstate->elemTable = NULL;
+//	}
 
 	mgstate->tuplestorestate = tuplestore_begin_heap(false, false, eager_mem);
 
