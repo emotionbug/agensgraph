@@ -24,4 +24,4 @@ extern ItemPointer updateElemProp(ModifyGraphState *mgstate, Oid elemtype,
 extern Datum makeModifiedElem(Datum elem, Oid elemtype,
 							  Datum id, Datum prop_map, Datum tid);
 
-#endif /* AGENSGRAPH_EXECCYPHERSET_H */
+#endif							/* AGENSGRAPH_EXECCYPHERSET_H */

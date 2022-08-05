@@ -35,7 +35,7 @@ ExecMergeGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 {
 	ModifyGraph *plan = (ModifyGraph *) mgstate->ps.plan;
 	ExprContext *econtext = mgstate->ps.ps_ExprContext;
-	GraphPath *path = (GraphPath *) linitial(mgstate->pattern);
+	GraphPath  *path = (GraphPath *) linitial(mgstate->pattern);
 
 	ResetExprContext(econtext);
 	econtext->ecxt_scantuple = slot;
@@ -104,7 +104,7 @@ createMergePath(ModifyGraphState *mgstate, GraphPath *path,
 
 	foreach(le, path->chain)
 	{
-		Node *elem = (Node *) lfirst(le);
+		Node	   *elem = (Node *) lfirst(le);
 
 		if (IsA(elem, GraphVertex))
 		{
@@ -121,7 +121,7 @@ createMergePath(ModifyGraphState *mgstate, GraphPath *path,
 
 			if (gedge != NULL)
 			{
-				Datum edge;
+				Datum		edge;
 
 				edge = findEdge(slot, gedge, NULL);
 				Assert(edge == (Datum) 0);
@@ -154,7 +154,7 @@ createMergePath(ModifyGraphState *mgstate, GraphPath *path,
 	/* make a graphpath and set it to the slot */
 	if (out)
 	{
-		Datum graphpath;
+		Datum		graphpath;
 
 		Assert(nvertices == nedges + 1);
 		Assert(pathlen == nvertices + nedges);
@@ -190,7 +190,7 @@ createMergeVertex(ModifyGraphState *mgstate, GraphVertex *gvertex,
 	if (isNull)
 		ereport(ERROR,
 				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-						errmsg("NULL is not allowed in MERGE")));
+				 errmsg("NULL is not allowed in MERGE")));
 
 	vertexId = getVertexIdDatum(vertex);
 	*vid = DatumGetGraphid(vertexId);
@@ -199,7 +199,7 @@ createMergeVertex(ModifyGraphState *mgstate, GraphVertex *gvertex,
 	if (!JB_ROOT_IS_OBJECT(DatumGetJsonbP(vertexProp)))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
-						errmsg("jsonb object is expected for property map")));
+				 errmsg("jsonb object is expected for property map")));
 
 	ExecClearTuple(insertSlot);
 
@@ -259,13 +259,13 @@ createMergeEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
 	if (isNull)
 		ereport(ERROR,
 				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-						errmsg("NULL is not allowed in MERGE")));
+				 errmsg("NULL is not allowed in MERGE")));
 
 	edgeProp = getEdgePropDatum(edge);
 	if (!JB_ROOT_IS_OBJECT(DatumGetJsonbP(edgeProp)))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
-						errmsg("jsonb object is expected for property map")));
+				 errmsg("jsonb object is expected for property map")));
 
 	ExecClearTuple(insertSlot);
 

@@ -21,12 +21,10 @@
 
 static TupleTableSlot *createPath(ModifyGraphState *mgstate, GraphPath *path,
 								  TupleTableSlot *slot);
-static Datum
-createVertex(ModifyGraphState *mgstate, GraphVertex *gvertex, Graphid *vid,
-			 TupleTableSlot *slot);
-static Datum
-createEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
-		   Graphid end, TupleTableSlot *slot);
+static Datum createVertex(ModifyGraphState *mgstate, GraphVertex *gvertex, Graphid *vid,
+						  TupleTableSlot *slot);
+static Datum createEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
+						Graphid end, TupleTableSlot *slot);
 
 TupleTableSlot *
 ExecCreateGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
@@ -40,7 +38,7 @@ ExecCreateGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 	/* create a pattern, accumulated paths `slot` has */
 	foreach(lp, plan->pattern)
 	{
-		GraphPath *path = (GraphPath *) lfirst(lp);
+		GraphPath  *path = (GraphPath *) lfirst(lp);
 		MemoryContext oldmctx;
 
 		oldmctx = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
@@ -83,7 +81,7 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 
 	foreach(le, path->chain)
 	{
-		Node *elem = (Node *) lfirst(le);
+		Node	   *elem = (Node *) lfirst(le);
 
 		if (IsA(elem, GraphVertex))
 		{
@@ -103,7 +101,7 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 
 			if (gedge != NULL)
 			{
-				Datum edge;
+				Datum		edge;
 
 				if (gedge->direction == GRAPH_EDGE_DIR_LEFT)
 				{
@@ -133,7 +131,7 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 	/* make a graphpath and set it to the slot */
 	if (out)
 	{
-		Datum graphpath;
+		Datum		graphpath;
 
 		Assert(nvertices == nedges + 1);
 		Assert(pathlen == nvertices + nedges);
@@ -173,7 +171,7 @@ createVertex(ModifyGraphState *mgstate, GraphVertex *gvertex, Graphid *vid,
 	if (!JB_ROOT_IS_OBJECT(DatumGetJsonbP(vertexProp)))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
-						errmsg("jsonb object is expected for property map")));
+				 errmsg("jsonb object is expected for property map")));
 
 	ExecClearTuple(elemTupleSlot);
 
@@ -248,7 +246,7 @@ createEdge(ModifyGraphState *mgstate, GraphEdge *gedge, Graphid start,
 	if (!JB_ROOT_IS_OBJECT(DatumGetJsonbP(edgeProp)))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
-						errmsg("jsonb object is expected for property map")));
+				 errmsg("jsonb object is expected for property map")));
 
 	ExecClearTuple(elemTupleSlot);
 

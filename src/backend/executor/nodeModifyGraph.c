@@ -99,7 +99,7 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 		(mgstate->sets != NIL && enable_multiple_update) ||
 		mgstate->exprs != NIL)
 	{
-		HASHCTL ctl;
+		HASHCTL		ctl;
 
 		memset(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(Graphid);
@@ -107,8 +107,8 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 		ctl.hcxt = CurrentMemoryContext;
 
 		mgstate->elemTable =
-				hash_create("modified object table", 128, &ctl,
-							HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+			hash_create("modified object table", 128, &ctl,
+						HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		mgstate->tuplestorestate = tuplestore_begin_heap(false, false, eager_mem);
 	}
 	else
@@ -136,7 +136,7 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 	}
 
 	initGraphWRStats(mgstate, mgplan->operation);
-    Increment_Estate_CommandId(estate);
+	Increment_Estate_CommandId(estate);
 	return mgstate;
 }
 
@@ -272,8 +272,7 @@ ExecModifyGraph(PlanState *pstate)
 			else if (type == EDGEARRAYOID && plan->operation == GWROP_DELETE)
 			{
 				/*
-				 * The edges are used only for removal,
-				 * not for result output.
+				 * The edges are used only for removal, not for result output.
 				 *
 				 * This assumes that there are only variable references in the
 				 * target list.
@@ -367,7 +366,7 @@ ExecInitGraphPattern(List *pattern, ModifyGraphState *mgstate)
 
 	foreach(le, gpath->chain)
 	{
-		Node *elem = lfirst(le);
+		Node	   *elem = lfirst(le);
 
 		if (IsA(elem, GraphVertex))
 		{
@@ -378,7 +377,7 @@ ExecInitGraphPattern(List *pattern, ModifyGraphState *mgstate)
 		}
 		else
 		{
-			GraphEdge *gedge = (GraphEdge *) elem;
+			GraphEdge  *gedge = (GraphEdge *) elem;
 
 			Assert(IsA(elem, GraphEdge));
 
@@ -393,7 +392,7 @@ ExecInitGraphPattern(List *pattern, ModifyGraphState *mgstate)
 static List *
 ExecInitGraphSets(List *sets, ModifyGraphState *mgstate)
 {
-	ListCell *ls;
+	ListCell   *ls;
 
 	foreach(ls, sets)
 	{
@@ -409,7 +408,7 @@ ExecInitGraphSets(List *sets, ModifyGraphState *mgstate)
 static List *
 ExecInitGraphDelExprs(List *exprs, ModifyGraphState *mgstate)
 {
-	ListCell *lc;
+	ListCell   *lc;
 
 	foreach(lc, exprs)
 	{
@@ -567,8 +566,8 @@ getPathFinal(ModifyGraphState *mgstate, Datum origin)
 static void
 reflectModifiedProp(ModifyGraphState *mgstate)
 {
-	ModifyGraph	*plan = (ModifyGraph *) mgstate->ps.plan;
-	HASH_SEQ_STATUS	seq;
+	ModifyGraph *plan = (ModifyGraph *) mgstate->ps.plan;
+	HASH_SEQ_STATUS seq;
 	ModifiedElemEntry *entry;
 
 	Assert(mgstate->elemTable != NULL);
@@ -576,8 +575,8 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 	hash_seq_init(&seq, mgstate->elemTable);
 	while ((entry = hash_seq_search(&seq)) != NULL)
 	{
-		Datum	gid = PointerGetDatum(entry->key);
-		Oid		type;
+		Datum		gid = PointerGetDatum(entry->key);
+		Oid			type;
 
 		type = get_labid_typeoid(mgstate->graphid,
 								 GraphidGetLabid(DatumGetGraphid(gid)));
@@ -587,7 +586,7 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 			deleteElem(mgstate, gid, &entry->data.tid, type);
 		else
 		{
-			ItemPointer	ctid;
+			ItemPointer ctid;
 
 			ctid = updateElemProp(mgstate, type, gid, entry->data.elem);
 
@@ -603,7 +602,7 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 				else
 					elog(ERROR, "unexpected graph type %d", type);
 
-				newelem = makeModifiedElem(entry->data.elem, type, gid,property,
+				newelem = makeModifiedElem(entry->data.elem, type, gid, property,
 										   PointerGetDatum(ctid));
 
 				pfree(DatumGetPointer(entry->data.elem));
@@ -676,20 +675,21 @@ findAttrInSlotByName(TupleTableSlot *slot, char *name)
 	for (i = 0; i < tupDesc->natts; i++)
 	{
 		Form_pg_attribute attr = TupleDescAttr(tupDesc, i);
+
 		if (namestrcmp(&(attr->attname), name) == 0 && !attr->attisdropped)
 			return attr->attnum;
 	}
 
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_NAME),
-					errmsg("variable \"%s\" does not exist", name)));
+			 errmsg("variable \"%s\" does not exist", name)));
 	return InvalidAttrNumber;
 }
 
 void
 setSlotValueByName(TupleTableSlot *slot, Datum value, char *name)
 {
-	AttrNumber attno;
+	AttrNumber	attno;
 
 	if (slot == NULL)
 		return;
@@ -744,15 +744,17 @@ isEdgeArrayOfPath(List *exprs, char *variable)
 static void
 InitResultRelInfosForModifyGraph(ModifyGraphState *mgstate, EState *estate)
 {
-	int index;
-	int numResultRelations = 0;
+	int			index;
+	int			numResultRelations = 0;
 	ResultRelInfo *resultRelInfos = palloc(estate->es_range_table_size *
 										   sizeof(ResultRelInfo));
 	ResultRelInfo *resultRelInfo = resultRelInfos;
+
 	for (index = 0; index < estate->es_range_table_size; index++)
 	{
-		Relation rel = ExecGetRangeTableRelationForModifyGraph(estate,
-															   index + 1);
+		Relation	rel = ExecGetRangeTableRelationForModifyGraph(estate,
+																  index + 1);
+
 		if (!rel)
 		{
 			continue;
@@ -775,7 +777,7 @@ InitResultRelInfosForModifyGraph(ModifyGraphState *mgstate, EState *estate)
  *		Open the Relation for a range table entry, if not already done
  *
  * The Relations will be closed again in ExecEndPlan().
- *		
+ *
  * See ExecGetRangeTableRelation(..)
  */
 static Relation
@@ -789,6 +791,7 @@ ExecGetRangeTableRelationForModifyGraph(EState *estate, Index rti)
 	{
 		/* First time through, so open the relation */
 		RangeTblEntry *rte = exec_rt_fetch(rti, estate);
+
 		if (rte == RTE_RELATION || !OidIsValid(rte->relid))
 			return NULL;
 

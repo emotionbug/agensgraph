@@ -15,4 +15,4 @@
 extern TupleTableSlot *ExecMergeGraph(ModifyGraphState *mgstate,
 									  TupleTableSlot *slot);
 
-#endif /* AGENSGRAPH_EXECCYPHERMERGE_H */
+#endif							/* AGENSGRAPH_EXECCYPHERMERGE_H */

@@ -50,7 +50,7 @@ ExecDeleteGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 			  type == VERTEXARRAYOID || type == EDGEARRAYOID))
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
-							errmsg("expected node, relationship, or path")));
+					 errmsg("expected node, relationship, or path")));
 
 		econtext->ecxt_scantuple = slot;
 		elem = ExecEvalExpr(gde->es_elem, econtext, &isNull);
@@ -65,20 +65,20 @@ ExecDeleteGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 			else
 				ereport(NOTICE,
 						(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-								errmsg("skipping deletion of NULL graph element")));
+						 errmsg("skipping deletion of NULL graph element")));
 
 			continue;
 		}
 
 		/*
 		 * NOTE: After all the graph elements to be removed are collected,
-		 *       they will be removed.
+		 * they will be removed.
 		 */
 		enterDelPropTable(mgstate, elem, type);
 
 		/*
-		 * The graphpath must be passed to the next plan for deleting
-		 * vertex array of the graphpath.
+		 * The graphpath must be passed to the next plan for deleting vertex
+		 * array of the graphpath.
 		 */
 		if (type == EDGEARRAYOID &&
 			TupleDescAttr(tupDesc, attno - 1)->atttypid == GRAPHPATHOID)
@@ -92,7 +92,7 @@ ExecDeleteGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 
 /*
  * isDetachRequired
- * 
+ *
  * This function is related to add_paths_for_cdelete.
  */
 static bool
@@ -124,9 +124,9 @@ isDetachRequired(ModifyGraphState *mgstate)
 
 	/*
 	 * true: At least one edge exists for the target vertices in the current
-	 *       slot. (nl_MatchedOuter && !nl_NeedNewOuter)
-	 * false: No edge exists for the target vertices in the current slot.
-	 *        (!nl_MatchedOuter && nl_NeedNewOuter)
+	 * slot. (nl_MatchedOuter && !nl_NeedNewOuter) false: No edge exists for
+	 * the target vertices in the current slot. (!nl_MatchedOuter &&
+	 * nl_NeedNewOuter)
 	 */
 	return nlstate->nl_MatchedOuter;
 }
@@ -162,7 +162,7 @@ deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type)
 		case TM_SelfModified:
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
-							errmsg("modifying the same element more than once cannot happen")));
+					 errmsg("modifying the same element more than once cannot happen")));
 		case TM_Ok:
 			break;
 
@@ -170,14 +170,14 @@ deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type)
 			/* TODO: A solution to concurrent update is needed. */
 			ereport(ERROR,
 					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-							errmsg("could not serialize access due to concurrent update")));
+					 errmsg("could not serialize access due to concurrent update")));
 		default:
 			elog(ERROR, "unrecognized heap_update status: %u", result);
 	}
 
 	/*
 	 * NOTE: VACUUM will delete index tuples associated with the heap tuple
-	 *       later.
+	 * later.
 	 */
 
 	if (type == VERTEXOID)
@@ -209,7 +209,7 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 			return;
 
 		entry->data.tid =
-				*((ItemPointer) DatumGetPointer(getVertexTidDatum(elem)));
+			*((ItemPointer) DatumGetPointer(getVertexTidDatum(elem)));
 	}
 	else if (type == EDGEOID)
 	{
@@ -220,9 +220,9 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 			return;
 		else
 		{
-			Graphid eid;
-			Graphid start;
-			Graphid end;
+			Graphid		eid;
+			Graphid		start;
+			Graphid		end;
 
 			eid = GraphidGetLabid(gid);
 			start = GraphidGetLabid(getEdgeStartDatum(elem));
@@ -233,7 +233,7 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 		}
 
 		entry->data.tid =
-				*((ItemPointer) DatumGetPointer(getEdgeTidDatum(elem)));
+			*((ItemPointer) DatumGetPointer(getEdgeTidDatum(elem)));
 	}
 	else if (type == VERTEXARRAYOID)
 	{
@@ -264,7 +264,7 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 				continue;
 
 			entry->data.tid =
-					*((ItemPointer) DatumGetPointer(getVertexTidDatum(vtx)));
+				*((ItemPointer) DatumGetPointer(getVertexTidDatum(vtx)));
 		}
 	}
 	else if (type == EDGEARRAYOID)
@@ -296,9 +296,9 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 				continue;
 			else
 			{
-				Graphid eid;
-				Graphid start;
-				Graphid end;
+				Graphid		eid;
+				Graphid		start;
+				Graphid		end;
 
 				eid = GraphidGetLabid(gid);
 				start = GraphidGetLabid(getEdgeStartDatum(edge));
@@ -309,7 +309,7 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 			}
 
 			entry->data.tid =
-					*((ItemPointer) DatumGetPointer(getEdgeTidDatum(edge)));
+				*((ItemPointer) DatumGetPointer(getEdgeTidDatum(edge)));
 		}
 	}
 	else
@@ -317,4 +317,3 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 		elog(ERROR, "unexpected graph type %d", type);
 	}
 }
-

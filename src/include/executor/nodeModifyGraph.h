@@ -25,9 +25,9 @@ typedef struct ModifiedElemEntry
 	Graphid		key;
 	union
 	{
-		Datum			elem;	/* modified graph element */
-		ItemPointerData	tid;	/* use to find tuple in delete plan */
-	} data;
+		Datum		elem;		/* modified graph element */
+		ItemPointerData tid;	/* use to find tuple in delete plan */
+	}			data;
 } ModifiedElemEntry;
 
 #define Increment_Estate_CommandId(estate) \

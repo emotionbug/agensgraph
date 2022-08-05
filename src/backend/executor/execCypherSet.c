@@ -31,6 +31,7 @@ void
 AssignSetKinds(ModifyGraphState *mgstate, GSPKind kind, TupleTableSlot *slot)
 {
 	ExprContext *econtext = mgstate->ps.ps_ExprContext;
+
 	ResetExprContext(econtext);
 	econtext->ecxt_scantuple = slot;
 	mgstate->setkind = kind;
@@ -47,16 +48,16 @@ ExecSetGraphExt(ModifyGraphState *mgstate, TupleTableSlot *slot, GSPKind kind)
 TupleTableSlot *
 ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 {
-	ModifyGraph		   *plan = (ModifyGraph *) mgstate->ps.plan;
-	ExprContext		   *econtext = mgstate->ps.ps_ExprContext;
-	ListCell		   *ls;
-	TupleTableSlot	   *result = mgstate->ps.ps_ResultTupleSlot;
-	GSPKind				kind = mgstate->setkind;
-	bool				free_slot = false;
+	ModifyGraph *plan = (ModifyGraph *) mgstate->ps.plan;
+	ExprContext *econtext = mgstate->ps.ps_ExprContext;
+	ListCell   *ls;
+	TupleTableSlot *result = mgstate->ps.ps_ResultTupleSlot;
+	GSPKind		kind = mgstate->setkind;
+	bool		free_slot = false;
 
 	/*
-	 * The results of previous clauses should be preserved.
-	 * So, shallow copying is used.
+	 * The results of previous clauses should be preserved. So, shallow
+	 * copying is used.
 	 */
 	copyVirtualTupleTableSlot(result, slot);
 
@@ -86,8 +87,8 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 		oldmctx = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
 
 		/*
-		 * Reflect newest value all types of scantuple
-		 * before evaluating expression.
+		 * Reflect newest value all types of scantuple before evaluating
+		 * expression.
 		 */
 		findAndReflectNewestValue(mgstate, econtext->ecxt_scantuple, free_slot);
 		findAndReflectNewestValue(mgstate, econtext->ecxt_innertuple, free_slot);
@@ -98,7 +99,7 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 		if (isNull)
 			ereport(ERROR,
 					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-							errmsg("updating NULL is not allowed")));
+					 errmsg("updating NULL is not allowed")));
 
 		/* evaluate SET expression */
 		if (elemtype == VERTEXOID)
@@ -118,7 +119,7 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 		if (isNull)
 			ereport(ERROR,
 					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-							errmsg("property map cannot be NULL")));
+					 errmsg("property map cannot be NULL")));
 
 		newelem = makeModifiedElem(elem_datum, elemtype, gid, expr_datum, tid);
 
@@ -130,6 +131,7 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 			updateElemProp(mgstate, elemtype, gid, newelem);
 
 		setSlotValueByName(result, newelem, gsp->variable);
+
 		/*
 		 * we have made it through the first iteration, it is okay to start
 		 * freeing our slot copies in findAndReflectNewestValue.
@@ -143,7 +145,7 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 static TupleTableSlot *
 copyVirtualTupleTableSlot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 {
-	int natts = srcslot->tts_tupleDescriptor->natts;
+	int			natts = srcslot->tts_tupleDescriptor->natts;
 
 	ExecClearTuple(dstslot);
 	ExecSetSlotDescriptor(dstslot, srcslot->tts_tupleDescriptor);
@@ -168,14 +170,14 @@ findAndReflectNewestValue(ModifyGraphState *mgstate, TupleTableSlot *slot,
 
 	for (i = 0; i < slot->tts_tupleDescriptor->natts; i++)
 	{
-		Datum	finalValue;
-		Datum	copyValue;
+		Datum		finalValue;
+		Datum		copyValue;
 
 		if (slot->tts_isnull[i] ||
 			slot->tts_tupleDescriptor->attrs[i].attisdropped)
 			continue;
 
-		switch(slot->tts_tupleDescriptor->attrs[i].atttypid)
+		switch (slot->tts_tupleDescriptor->attrs[i].atttypid)
 		{
 			case VERTEXOID:
 				finalValue = getVertexFinal(mgstate, slot->tts_values[i]);
@@ -196,9 +198,10 @@ findAndReflectNewestValue(ModifyGraphState *mgstate, TupleTableSlot *slot,
 		 * freed.
 		 */
 		copyValue = datumCopy(finalValue, false, -1);
+
 		/*
-		 * Free the copy of finalValue that we've previously stored in
-		 * the slot.
+		 * Free the copy of finalValue that we've previously stored in the
+		 * slot.
 		 */
 		if (free_slot &&
 			enable_multiple_update &&
@@ -217,7 +220,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	EState	   *estate = mgstate->ps.state;
 	TupleTableSlot *elemTupleSlot = mgstate->elemTupleSlot;
 	Oid			relid;
-	ItemPointer	ctid;
+	ItemPointer ctid;
 	ResultRelInfo *resultRelInfo;
 	ResultRelInfo *savedResultRelInfo;
 	Relation	resultRelationDesc;
@@ -281,16 +284,16 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 		case TM_SelfModified:
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
-							errmsg("graph element(%hu," UINT64_FORMAT ") has been SET multiple times",
-			GraphidGetLabid(DatumGetGraphid(gid)),
-			GraphidGetLocid(DatumGetGraphid(gid)))));
+					 errmsg("graph element(%hu," UINT64_FORMAT ") has been SET multiple times",
+							GraphidGetLabid(DatumGetGraphid(gid)),
+							GraphidGetLocid(DatumGetGraphid(gid)))));
 		case TM_Ok:
 			break;
 		case TM_Updated:
 			/* TODO: A solution to concurrent update is needed. */
 			ereport(ERROR,
 					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-							errmsg("could not serialize access due to concurrent update")));
+					 errmsg("could not serialize access due to concurrent update")));
 		default:
 			elog(ERROR, "unrecognized heap_update status: %u", result);
 	}
@@ -343,7 +346,7 @@ enterSetPropTable(ModifyGraphState *mgstate, Datum gid, Datum newelem)
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
-							errmsg("graph element(%hu," UINT64_FORMAT ") has been SET multiple times",
+					 errmsg("graph element(%hu," UINT64_FORMAT ") has been SET multiple times",
 							GraphidGetLabid(entry->key),
 							GraphidGetLocid(entry->key))));
 	}

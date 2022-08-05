@@ -15,4 +15,4 @@
 extern TupleTableSlot *ExecCreateGraph(ModifyGraphState *mgstate,
 									   TupleTableSlot *slot);
 
-#endif /* AGENSGRAPH_EXECCYPHERCREATE_H */
+#endif							/* AGENSGRAPH_EXECCYPHERCREATE_H */
