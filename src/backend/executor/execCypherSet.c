@@ -58,7 +58,7 @@ updateElemProp2(ModifyGraphState *mgstate, GraphSetProp *gsp, Oid elemtype,
 	 * same with those of vertex/edge.
 	 */
 	lreplace2:;
-	elog(INFO, "????");
+//	elog(INFO, "????");
 	ExecClearTuple(elemTupleSlot);
 	ExecSetSlotDescriptor(elemTupleSlot,
 						  RelationGetDescr(resultRelationDesc));
@@ -112,7 +112,7 @@ updateElemProp2(ModifyGraphState *mgstate, GraphSetProp *gsp, Oid elemtype,
 			bool	isnull;
 			TupleTableSlot *inputslot;
 			TupleTableSlot *epqslot;
-			Datum		_tid;
+//			Datum		_tid;
 			Datum _elem_datum;
 			Datum _expr_datum;
 
@@ -156,7 +156,7 @@ updateElemProp2(ModifyGraphState *mgstate, GraphSetProp *gsp, Oid elemtype,
 								(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 										errmsg("updating NULL is not allowed")));
 					/* evaluate SET expression */
-					_tid = PointerGetDatum(&elemTupleSlot->tts_tid);
+					// _tid = PointerGetDatum(&elemTupleSlot->tts_tid);
 					if (elemtype == VERTEXOID)
 					{
 						gid = getVertexIdDatum(_elem_datum);
@@ -174,7 +174,7 @@ updateElemProp2(ModifyGraphState *mgstate, GraphSetProp *gsp, Oid elemtype,
 								(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 										errmsg("property map cannot be NULL")));
 					elem_datum = makeModifiedElem(_elem_datum, elemtype, gid,
-												  _expr_datum, _tid);
+												  _expr_datum, PointerGetDatum(ctid));
 					goto lreplace2;
 
 				case TM_Deleted:

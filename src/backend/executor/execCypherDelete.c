@@ -74,7 +74,7 @@ ExecDeleteGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 		 * NOTE: After all the graph elements to be removed are collected,
 		 *       they will be removed.
 		 */
-		enterDelPropTable(mgstate, elem, type);
+//		enterDelPropTable(mgstate, elem, type);
 
 		/*
 		 * The graphpath must be passed to the next plan for deleting
