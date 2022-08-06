@@ -94,6 +94,12 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 
 	InitResultRelInfosForModifyGraph(mgstate, estate);
 
+	EvalPlanQualInit(&mgstate->mt_epqstate, estate, NULL, NIL,
+					 mgplan->epqParam);
+	mgstate->mt_arowmarks = (List **) palloc0(sizeof(List *) * 1);
+	EvalPlanQualSetPlan(&mgstate->mt_epqstate, mgplan->subplan,
+						mgstate->mt_arowmarks[0]);
+
 	/* Fill eager action information */
 	if (mgstate->eagerness ||
 		(mgstate->sets != NIL && enable_multiple_update) ||

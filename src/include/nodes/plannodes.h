@@ -1278,6 +1278,7 @@ typedef struct ModifyGraph
 	List	   *pattern;		/* graph pattern (list of paths) for CREATE */
 	List	   *exprs;			/* expression list for DELETE */
 	List	   *sets;			/* list of GraphSetProp's for SET/REMOVE */
+	int			epqParam;
 } ModifyGraph;
 
 typedef struct Shortestpath

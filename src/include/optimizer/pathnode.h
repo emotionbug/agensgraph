@@ -348,6 +348,7 @@ extern ModifyGraphPath *create_modifygraph_path(PlannerInfo *root,
 												bool last, Path *subpath,
 												uint32 nr_modify, bool detach,
 												bool eager, List *pattern,
-												List *exprs, List *sets);
+												List *exprs, List *sets,
+												int epqParam);
 
 #endif							/* PATHNODE_H */
