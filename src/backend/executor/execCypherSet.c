@@ -127,7 +127,7 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 		updateElementTable(mgstate, gid, newelem);
 
 		/*
-		 * To use the modified data in the next Iteration, modifying the data
+		 * To use the modified data in the next iteration, modifying the data
 		 * in the ExprContext.
 		 */
 		setSlotValueByAttnum(econtext->ecxt_scantuple, newelem, attnum);
