@@ -22,10 +22,9 @@
 static TupleTableSlot *copyVirtualTupleTableSlot(TupleTableSlot *dstslot,
 												 TupleTableSlot *srcslot);
 static void findAndReflectNewestValue(ModifyGraphState *mgstate,
-									  TupleTableSlot *slot,
-									  bool free_slot);
-static void enterSetPropTable(ModifyGraphState *mgstate, Datum gid,
-							  Datum newelem);
+									  TupleTableSlot *slot);
+static void updateElementTable(ModifyGraphState *mgstate, Datum gid,
+							   Datum newelem);
 
 void
 AssignSetKinds(ModifyGraphState *mgstate, GSPKind kind, TupleTableSlot *slot)
@@ -44,7 +43,6 @@ ExecSetGraphExt(ModifyGraphState *mgstate, TupleTableSlot *slot, GSPKind kind)
 	return ExecSetGraph(mgstate, slot);
 }
 
-
 TupleTableSlot *
 ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 {
@@ -53,13 +51,20 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 	ListCell   *ls;
 	TupleTableSlot *result = mgstate->ps.ps_ResultTupleSlot;
 	GSPKind		kind = mgstate->setkind;
-	bool		free_slot = false;
 
 	/*
 	 * The results of previous clauses should be preserved. So, shallow
 	 * copying is used.
 	 */
 	copyVirtualTupleTableSlot(result, slot);
+
+	/*
+	 * Reflect the newest value all types of scantuple before evaluating
+	 * expression.
+	 */
+	findAndReflectNewestValue(mgstate, econtext->ecxt_scantuple);
+	findAndReflectNewestValue(mgstate, econtext->ecxt_innertuple);
+	findAndReflectNewestValue(mgstate, econtext->ecxt_outertuple);
 
 	foreach(ls, mgstate->sets)
 	{
@@ -72,6 +77,7 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 		Datum		tid;
 		Datum		newelem;
 		MemoryContext oldmctx;
+		AttrNumber	attnum;
 
 		if (gsp->kind != kind)
 		{
@@ -86,15 +92,8 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 		/* store intermediate results in tuple memory context */
 		oldmctx = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
 
-		/*
-		 * Reflect newest value all types of scantuple before evaluating
-		 * expression.
-		 */
-		findAndReflectNewestValue(mgstate, econtext->ecxt_scantuple, free_slot);
-		findAndReflectNewestValue(mgstate, econtext->ecxt_innertuple, free_slot);
-		findAndReflectNewestValue(mgstate, econtext->ecxt_outertuple, free_slot);
-
 		/* get original graph element */
+		attnum = ((Var *) gsp->es_elem->expr)->varattno;
 		elem_datum = ExecEvalExpr(gsp->es_elem, econtext, &isNull);
 		if (isNull)
 			ereport(ERROR,
@@ -125,18 +124,16 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 
 		MemoryContextSwitchTo(oldmctx);
 
-		if (mgstate->elemTable)
-			enterSetPropTable(mgstate, gid, newelem);
-		else
-			updateElemProp(mgstate, elemtype, gid, newelem);
-
-		setSlotValueByName(result, newelem, gsp->variable);
+		updateElementTable(mgstate, gid, newelem);
 
 		/*
-		 * we have made it through the first iteration, it is okay to start
-		 * freeing our slot copies in findAndReflectNewestValue.
+		 * To use the modified data in the next Iteration, modifying the data
+		 * in the ExprContext.
 		 */
-		free_slot = true;
+		setSlotValueByAttnum(econtext->ecxt_scantuple, newelem, attnum);
+		setSlotValueByAttnum(econtext->ecxt_innertuple, newelem, attnum);
+		setSlotValueByAttnum(econtext->ecxt_outertuple, newelem, attnum);
+		setSlotValueByAttnum(result, newelem, attnum);
 	}
 
 	return (plan->last ? NULL : result);
@@ -159,9 +156,14 @@ copyVirtualTupleTableSlot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 	return dstslot;
 }
 
+/*
+ * findAndReflectNewestValue
+ *
+ * If a tuple with already updated exists, the data is taken from the elemTable
+ * in ModifyGraphState and reflecting in the tuple data currently working on.
+ */
 static void
-findAndReflectNewestValue(ModifyGraphState *mgstate, TupleTableSlot *slot,
-						  bool free_slot)
+findAndReflectNewestValue(ModifyGraphState *mgstate, TupleTableSlot *slot)
 {
 	int			i;
 
@@ -171,7 +173,6 @@ findAndReflectNewestValue(ModifyGraphState *mgstate, TupleTableSlot *slot,
 	for (i = 0; i < slot->tts_tupleDescriptor->natts; i++)
 	{
 		Datum		finalValue;
-		Datum		copyValue;
 
 		if (slot->tts_isnull[i] ||
 			slot->tts_tupleDescriptor->attrs[i].attisdropped)
@@ -197,18 +198,7 @@ findAndReflectNewestValue(ModifyGraphState *mgstate, TupleTableSlot *slot,
 		 * when the mgstate->elemTable hash table entries are indepenently
 		 * freed.
 		 */
-		copyValue = datumCopy(finalValue, false, -1);
-
-		/*
-		 * Free the copy of finalValue that we've previously stored in the
-		 * slot.
-		 */
-		if (free_slot &&
-			enable_multiple_update &&
-			(finalValue != slot->tts_values[i]))
-			pfree(DatumGetPointer(slot->tts_values[i]));
-
-		setSlotValueByAttnum(slot, copyValue, i + 1);
+		setSlotValueByAttnum(slot, finalValue, i + 1);
 	}
 }
 
@@ -333,7 +323,7 @@ makeModifiedElem(Datum elem, Oid elemtype,
 }
 
 static void
-enterSetPropTable(ModifyGraphState *mgstate, Datum gid, Datum newelem)
+updateElementTable(ModifyGraphState *mgstate, Datum gid, Datum newelem)
 {
 	ModifiedElemEntry *entry;
 	bool		found;
