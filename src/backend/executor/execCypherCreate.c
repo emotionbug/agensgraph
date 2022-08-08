@@ -56,7 +56,6 @@ ExecCreateGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 static TupleTableSlot *
 createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 {
-	ExprContext *econtext = mgstate->ps.ps_ExprContext;
 	bool		out = (path->variable != NULL);
 	int			pathlen;
 	Datum	   *vertices = NULL;

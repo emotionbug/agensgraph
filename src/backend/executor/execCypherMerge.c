@@ -79,7 +79,6 @@ static TupleTableSlot *
 createMergePath(ModifyGraphState *mgstate, GraphPath *path,
 				TupleTableSlot *slot)
 {
-	ExprContext *econtext = mgstate->ps.ps_ExprContext;
 	bool		out = (path->variable != NULL);
 	int			pathlen;
 	Datum	   *vertices = NULL;
