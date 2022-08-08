@@ -72,8 +72,8 @@ createPath(ModifyGraphState *mgstate, GraphPath *path, TupleTableSlot *slot)
 		pathlen = list_length(path->chain);
 		Assert(pathlen % 2 == 1);
 
-		vertices = makeDatumArray(econtext, (pathlen / 2) + 1);
-		edges = makeDatumArray(econtext, pathlen / 2);
+		vertices = makeDatumArray((pathlen / 2) + 1);
+		edges = makeDatumArray(pathlen / 2);
 
 		nvertices = 0;
 		nedges = 0;

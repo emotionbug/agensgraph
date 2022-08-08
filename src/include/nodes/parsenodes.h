@@ -210,6 +210,7 @@ typedef struct Query
 		List	   *pattern;	/* graph pattern (list of paths) for CREATE */
 		List	   *exprs;		/* expression list for DELETE */
 		List	   *sets;		/* expression list for SET/REMOVE */
+		List	   *resultRelations;
 	}			graph;
 } Query;
 

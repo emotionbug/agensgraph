@@ -1872,6 +1872,7 @@ typedef struct ModifyGraphPath
 	List	   *exprs;			/* expression list for DELETE */
 	List	   *sets;			/* list of GraphSetProp's for SET/REMOVE */
 	int 		epqParam;
+	List	   *resultRelations;
 } ModifyGraphPath;
 
 typedef struct ShortestpathPath

@@ -299,7 +299,7 @@ static char *getDeleteTargetName(ParseState *pstate, Node *expr);
 /* graph write */
 static List *addRangeTableAllModifiedLabels(ParseState *pstate, Query *qry,
 											List *targets);
-static void addRangeTableLabels(ParseState *pstate, List *targets);
+static void addRangeTableLabels(ParseState *pstate, List *targets, Query *qry);
 static Oid	find_target_label(Node *node, Query *qry);
 static bool find_target_label_walker(Node *node,
 									 find_target_label_context *ctx);
@@ -778,7 +778,7 @@ transformCypherCreateClause(ParseState *pstate, CypherClause *clause)
 
 	qry->graph.pattern = transformCreatePattern(pstate, cpath,
 												&qry->targetList);
-	addRangeTableLabels(pstate, pstate->p_target_labels);
+	addRangeTableLabels(pstate, pstate->p_target_labels, qry);
 	qry->graph.nr_modify = pstate->p_nr_modify_clause++;
 
 	qry->targetList = (List *) resolve_future_vertex(pstate,
@@ -5396,14 +5396,15 @@ addRangeTableAllModifiedLabels(ParseState *pstate, Query *qry, List *targets)
 		new_targets = list_union_oid(new_targets, child_oids);
 	}
 
-	addRangeTableLabels(pstate, new_targets);
+	addRangeTableLabels(pstate, new_targets, qry);
 
 	return new_targets;
 }
 
 static void
-addRangeTableLabels(ParseState *pstate, List *targets)
+addRangeTableLabels(ParseState *pstate, List *targets, Query *qry)
 {
+	List 	   *resultRelations = NIL;
 	ListCell   *lc;
 
 	foreach(lc, targets)
@@ -5411,14 +5412,16 @@ addRangeTableLabels(ParseState *pstate, List *targets)
 		Oid			relid = lfirst_oid(lc);
 		Relation	relation = table_open(relid, AccessShareLock);
 
-		addRangeTableEntryForRelation(pstate,
+		ParseNamespaceItem *nsitem = addRangeTableEntryForRelation(pstate,
 									  relation,
 									  AccessShareLock,
 									  NULL,
 									  false,
 									  false);
 		table_close(relation, NoLock);
+		resultRelations = lappend_int(resultRelations, nsitem->p_rtindex);
 	}
+	qry->graph.resultRelations = resultRelations;
 }
 
 static Oid

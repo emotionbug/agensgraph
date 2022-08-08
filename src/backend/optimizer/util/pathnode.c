@@ -3714,7 +3714,8 @@ ModifyGraphPath *
 create_modifygraph_path(PlannerInfo *root, RelOptInfo *rel,
 						GraphWriteOp operation, bool last, Path *subpath,
 						uint32 nr_modify, bool detach, bool eager,
-						List *pattern, List *exprs, List *sets, int epqParam)
+						List *pattern, List *exprs, List *sets,
+						List *resultRelations, int epqParam)
 {
 	ModifyGraphPath *pathnode = makeNode(ModifyGraphPath);
 
@@ -3740,6 +3741,7 @@ create_modifygraph_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->exprs = exprs;
 	pathnode->sets = sets;
 	pathnode->epqParam = epqParam;
+	pathnode->resultRelations = resultRelations;
 
 	return pathnode;
 }

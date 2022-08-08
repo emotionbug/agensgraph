@@ -24,14 +24,11 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
-#include "access/table.h"
 #include "access/heapam.h"
 #include "executor/execCypherCreate.h"
 #include "executor/execCypherSet.h"
 #include "executor/execCypherDelete.h"
 #include "executor/execCypherMerge.h"
-#include "access/parallel.h"
-#include "storage/lmgr.h"
 
 bool		enable_multiple_update = true;
 bool		auto_gather_graphmeta = false;
@@ -48,9 +45,7 @@ static void reflectModifiedProp(ModifyGraphState *mgstate);
 /* common */
 static bool isEdgeArrayOfPath(List *exprs, char *variable);
 
-static void InitResultRelInfosForModifyGraph(ModifyGraphState *mgstate,
-											 EState *estate);
-static Relation ExecGetRangeTableRelationForModifyGraph(EState *estate, Index rti);
+static void openResultRelInfosIndices(ModifyGraphState *mgstate);
 
 ModifyGraphState *
 ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
@@ -92,7 +87,9 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 	mgstate->exprs = ExecInitGraphDelExprs(mgplan->exprs, mgstate);
 	mgstate->sets = ExecInitGraphSets(mgplan->sets, mgstate);
 
-	InitResultRelInfosForModifyGraph(mgstate, estate);
+	mgstate->resultRelInfo = estate->es_result_relations + mgplan->resultRelIndex;
+	mgstate->numResultRelInfo = list_length(mgplan->resultRelations);
+	openResultRelInfosIndices(mgstate);
 
 	EvalPlanQualInit(&mgstate->mt_epqstate, estate, NULL, NIL,
 					 mgplan->epqParam);
@@ -304,21 +301,12 @@ ExecModifyGraph(PlanState *pstate)
 void
 ExecEndModifyGraph(ModifyGraphState *mgstate)
 {
-	int			i;
-	ResultRelInfo *resultRelInfo = mgstate->resultRelations;
-
 	if (mgstate->tuplestorestate != NULL)
 		tuplestore_end(mgstate->tuplestorestate);
 	mgstate->tuplestorestate = NULL;
 
 	if (mgstate->elemTable != NULL)
 		hash_destroy(mgstate->elemTable);
-
-	for (i = 0; i < mgstate->numResultRelations; i++)
-	{
-		ExecCloseIndices(resultRelInfo);
-		resultRelInfo++;
-	}
 
 	/*
 	 * clean out the tuple table
@@ -628,10 +616,10 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 ResultRelInfo *
 getResultRelInfo(ModifyGraphState *mgstate, Oid relid)
 {
-	ResultRelInfo *resultRelInfo = mgstate->resultRelations;
+	ResultRelInfo *resultRelInfo = mgstate->resultRelInfo;
 	int			i;
 
-	for (i = 0; i < mgstate->numResultRelations; i++)
+	for (i = 0; i < mgstate->numResultRelInfo; i++)
 	{
 		if (RelationGetRelid(resultRelInfo->ri_RelationDesc) == relid)
 			return resultRelInfo;
@@ -696,7 +684,6 @@ findAttrInSlotByName(TupleTableSlot *slot, char *name)
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_NAME),
 			 errmsg("variable \"%s\" does not exist", name)));
-	return InvalidAttrNumber;
 }
 
 void
@@ -725,7 +712,7 @@ setSlotValueByAttnum(TupleTableSlot *slot, Datum value, int attnum)
 }
 
 Datum *
-makeDatumArray(ExprContext *econtext, int len)
+makeDatumArray(int len)
 {
 	if (len == 0)
 		return NULL;
@@ -751,86 +738,16 @@ isEdgeArrayOfPath(List *exprs, char *variable)
 }
 
 /*
- * InitResultRelInfosForModifyGraph
- *		Build ResultRelInfo from es_range_table
+ * openResultRelInfosIndices
  */
 static void
-InitResultRelInfosForModifyGraph(ModifyGraphState *mgstate, EState *estate)
+openResultRelInfosIndices(ModifyGraphState *mgstate)
 {
 	int			index;
-	int			numResultRelations = 0;
-	ResultRelInfo *resultRelInfos = palloc(estate->es_range_table_size *
-										   sizeof(ResultRelInfo));
-	ResultRelInfo *resultRelInfo = resultRelInfos;
-
-	for (index = 0; index < estate->es_range_table_size; index++)
+	ResultRelInfo *resultRelInfo = mgstate->resultRelInfo;
+	for (index = 0; index < mgstate->numResultRelInfo; index++)
 	{
-		Relation	rel = ExecGetRangeTableRelationForModifyGraph(estate,
-																  index + 1);
-
-		if (!rel)
-		{
-			continue;
-		}
-		InitResultRelInfo(resultRelInfo,
-						  rel,
-						  index + 1,
-						  NULL,
-						  estate->es_instrument);
 		ExecOpenIndices(resultRelInfo, false);
 		resultRelInfo++;
-		numResultRelations++;
 	}
-	mgstate->resultRelations = resultRelInfos;
-	mgstate->numResultRelations = numResultRelations;
-}
-
-/*
- * ExecGetRangeTableRelationForModifyGraph
- *		Open the Relation for a range table entry, if not already done
- *
- * The Relations will be closed again in ExecEndPlan().
- *
- * See ExecGetRangeTableRelation(..)
- */
-static Relation
-ExecGetRangeTableRelationForModifyGraph(EState *estate, Index rti)
-{
-	Relation	rel;
-
-	Assert(rti > 0 && rti <= estate->es_range_table_size);
-	rel = estate->es_relations[rti - 1];
-	if (rel == NULL)
-	{
-		/* First time through, so open the relation */
-		RangeTblEntry *rte = exec_rt_fetch(rti, estate);
-
-		if (rte == RTE_RELATION || !OidIsValid(rte->relid))
-			return NULL;
-
-		if (!IsParallelWorker())
-		{
-			/*
-			 * In a normal query, we should already have the appropriate lock,
-			 * but verify that through an Assert.  Since there's already an
-			 * Assert inside table_open that insists on holding some lock, it
-			 * seems sufficient to check this only when rellockmode is higher
-			 * than the minimum.
-			 */
-			rel = table_open(rte->relid, NoLock);
-			Assert(rte->rellockmode == AccessShareLock ||
-				   CheckRelationLockedByMe(rel, rte->rellockmode, false));
-		}
-		else
-		{
-			/*
-			 * If we are a parallel worker, we need to obtain our own local
-			 * lock on the relation.  This ensures sane behavior in case the
-			 * parent process exits before we do.
-			 */
-			rel = table_open(rte->relid, rte->rellockmode);
-		}
-		estate->es_relations[rti - 1] = rel;
-	}
-	return rel;
 }

@@ -1238,6 +1238,9 @@ _copyModifyGraph(const ModifyGraph *from)
 	COPY_NODE_FIELD(pattern);
 	COPY_NODE_FIELD(exprs);
 	COPY_NODE_FIELD(sets);
+	COPY_SCALAR_FIELD(epqParam);
+	COPY_NODE_FIELD(resultRelations);
+	COPY_SCALAR_FIELD(resultRelIndex);
 
 	return newnode;
 }
@@ -3338,6 +3341,7 @@ _copyQuery(const Query *from)
 	COPY_NODE_FIELD(graph.pattern);
 	COPY_NODE_FIELD(graph.exprs);
 	COPY_NODE_FIELD(graph.sets);
+	COPY_NODE_FIELD(graph.resultRelations);
 
 	return newnode;
 }

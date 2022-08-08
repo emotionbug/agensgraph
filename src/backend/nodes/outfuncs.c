@@ -974,6 +974,9 @@ _outModifyGraph(StringInfo str, const ModifyGraph *node)
 	WRITE_NODE_FIELD(pattern);
 	WRITE_NODE_FIELD(exprs);
 	WRITE_NODE_FIELD(sets);
+	WRITE_INT_FIELD(epqParam);
+	WRITE_NODE_FIELD(resultRelations);
+	WRITE_INT_FIELD(resultRelIndex);
 }
 
 static void
@@ -3207,6 +3210,7 @@ _outQuery(StringInfo str, const Query *node)
 	WRITE_NODE_FIELD(graph.pattern);
 	WRITE_NODE_FIELD(graph.exprs);
 	WRITE_NODE_FIELD(graph.sets);
+	WRITE_NODE_FIELD(graph.resultRelations);
 }
 
 static void

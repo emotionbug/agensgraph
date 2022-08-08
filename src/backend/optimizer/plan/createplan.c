@@ -4711,7 +4711,8 @@ create_modifygraph_plan(PlannerInfo *root, ModifyGraphPath *best_path)
 	plan = make_modifygraph(root, best_path->operation, best_path->last,
 							subplan, best_path->nr_modify, best_path->detach,
 							best_path->eagerness, best_path->pattern,
-							best_path->exprs, best_path->sets , best_path->epqParam);
+							best_path->exprs, best_path->sets,
+							best_path->resultRelations, best_path->epqParam);
 
 	copy_generic_path_info(&plan->plan, &best_path->path);
 
@@ -7339,7 +7340,7 @@ ModifyGraph *
 make_modifygraph(PlannerInfo *root, GraphWriteOp operation, bool last,
 				 Plan *subplan, uint32 nr_modify, bool detach,
 				 bool eagerness, List *pattern, List *exprs, List *sets,
-				 int epqParam)
+				 List *resultRelations, int epqParam)
 {
 	ModifyGraph *node = makeNode(ModifyGraph);
 
@@ -7353,6 +7354,7 @@ make_modifygraph(PlannerInfo *root, GraphWriteOp operation, bool last,
 	node->exprs = exprs;
 	node->sets = sets;
 	node->epqParam = epqParam;
+	node->resultRelations = resultRelations;
 
 	return node;
 }

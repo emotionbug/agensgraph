@@ -1099,6 +1099,7 @@ _equalQuery(const Query *a, const Query *b)
 	COMPARE_NODE_FIELD(graph.pattern);
 	COMPARE_NODE_FIELD(graph.exprs);
 	COMPARE_NODE_FIELD(graph.sets);
+	COMPARE_NODE_FIELD(graph.resultRelations);
 
 	return true;
 }

@@ -51,7 +51,7 @@ extern Datum findEdge(TupleTableSlot *slot, GraphEdge *gedge, Graphid *eid);
 extern AttrNumber findAttrInSlotByName(TupleTableSlot *slot, char *name);
 extern void setSlotValueByName(TupleTableSlot *slot, Datum value, char *name);
 extern void setSlotValueByAttnum(TupleTableSlot *slot, Datum value, int attnum);
-extern Datum *makeDatumArray(ExprContext *econtext, int len);
+extern Datum *makeDatumArray(int len);
 
 extern Datum getVertexFinal(ModifyGraphState *mgstate, Datum origin);
 extern Datum getEdgeFinal(ModifyGraphState *mgstate, Datum origin);

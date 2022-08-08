@@ -2489,6 +2489,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 													parse->graph.pattern,
 													parse->graph.exprs,
 													parse->graph.sets,
+													parse->graph.resultRelations,
 													assign_special_exec_param(root));
 		}
 		/*

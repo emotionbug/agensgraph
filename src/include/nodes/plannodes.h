@@ -1279,6 +1279,8 @@ typedef struct ModifyGraph
 	List	   *exprs;			/* expression list for DELETE */
 	List	   *sets;			/* list of GraphSetProp's for SET/REMOVE */
 	int			epqParam;
+	List	   *resultRelations;
+	int			resultRelIndex;
 } ModifyGraph;
 
 typedef struct Shortestpath
