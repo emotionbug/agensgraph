@@ -1905,7 +1905,6 @@ typedef struct NestLoopState
 
 	dlist_head	ctxs_head;		/* list of NestLoopContext */
 	dlist_node *prev_ctx_node;
-	CommandId	nl_graphwrite_cid;
 } NestLoopState;
 
 typedef struct NestLoopVLEState
@@ -2571,6 +2570,8 @@ typedef struct LimitState
  * Graph nodes
  */
 
+#include "nodes/graphnodes.h"
+
 typedef struct ModifyGraphState
 {
 	PlanState	ps;
@@ -2580,15 +2581,19 @@ typedef struct ModifyGraphState
 	PlanState  *subplan;
 	TupleTableSlot *elemTupleSlot;	/* to insert vertex/edge */
 	Oid			graphid;
-	ResultRelInfo *resultRelations;
-	int			numResultRelations;
-	CommandId	modify_cid;
+	ResultRelInfo *resultRelInfo;
+	int			numResultRelInfo;
 	List	   *pattern;		/* graph pattern (list of paths) for CREATE
 								   with `es_prop_map` */
 	List	   *exprs;			/* expression state list for DELETE */
+	GSPKind 	setkind;
 	List	   *sets;			/* list of GraphSetProp's for SET/REMOVE */
 	HTAB	   *elemTable;
 	Tuplestorestate *tuplestorestate;
+	TupleTableSlot *(*execProc) (struct ModifyGraphState *pstate,
+								 TupleTableSlot *slot);
+	EPQState	mt_epqstate;	/* for evaluating EvalPlanQual rechecks */
+	List **mt_arowmarks;
 } ModifyGraphState;
 
 typedef struct Hash2SideState
