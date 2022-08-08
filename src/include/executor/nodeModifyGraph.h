@@ -19,20 +19,13 @@ extern void ExecEndModifyGraph(ModifyGraphState *mgstate);
 
 /* global variable - see postgres.c */
 extern GraphWriteStats graphWriteStats;
-
-typedef struct ModifiedGraphEntry
-{
-	Datum		elem;		/* modified graph element */
-	AttrNumber 	attnum;
-} ModifiedGraphEntry;
-
 /* hash entry */
 typedef struct ModifiedElemEntry
 {
 	Graphid		key;
 	union
 	{
-		ModifiedGraphEntry set_graph_entry;		/* modified graph element */
+		Datum		elem;		/* modified graph element */
 		ItemPointerData tid;	/* use to find tuple in delete plan */
 	}			data;
 } ModifiedElemEntry;

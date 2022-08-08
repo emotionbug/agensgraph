@@ -432,7 +432,7 @@ getVertexFinal(ModifyGraphState *mgstate, Datum origin)
 	if (plan->operation == GWROP_DELETE)
 		return (Datum) 0;
 	else
-		return entry->data.set_graph_entry.elem;
+		return entry->data.elem;
 }
 
 Datum
@@ -452,7 +452,7 @@ getEdgeFinal(ModifyGraphState *mgstate, Datum origin)
 	if (plan->operation == GWROP_DELETE)
 		return (Datum) 0;
 	else
-		return entry->data.set_graph_entry.elem;
+		return entry->data.elem;
 }
 
 Datum
@@ -582,14 +582,7 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 		{
 			ItemPointer ctid;
 
-			if (plan->operation == GWROP_SET)
-			{
-				ctid = updateElemPropForEPQ(mgstate, type, gid, &entry->data.set_graph_entry);
-			}
-			else
-			{
-				ctid = updateElemProp(mgstate, type, gid, entry->data.set_graph_entry.elem);
-			}
+			ctid = updateElemProp(mgstate, type, gid, entry->data.elem);
 
 			if (mgstate->eagerness)
 			{
@@ -597,17 +590,17 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 				Datum		newelem;
 
 				if (type == VERTEXOID)
-					property = getVertexPropDatum(entry->data.set_graph_entry.elem);
+					property = getVertexPropDatum(entry->data.elem);
 				else if (type == EDGEOID)
-					property = getEdgePropDatum(entry->data.set_graph_entry.elem);
+					property = getEdgePropDatum(entry->data.elem);
 				else
 					elog(ERROR, "unexpected graph type %d", type);
 
-				newelem = makeModifiedElem(entry->data.set_graph_entry.elem, type, gid, property,
+				newelem = makeModifiedElem(entry->data.elem, type, gid, property,
 										   PointerGetDatum(ctid));
 
-				pfree(DatumGetPointer(entry->data.set_graph_entry.elem));
-				entry->data.set_graph_entry.elem = newelem;
+				pfree(DatumGetPointer(entry->data.elem));
+				entry->data.elem = newelem;
 			}
 		}
 	}
