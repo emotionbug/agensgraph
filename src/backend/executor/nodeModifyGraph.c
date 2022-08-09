@@ -174,6 +174,7 @@ ExecModifyGraph(PlanState *pstate)
 			}
 
 			slot = ExecProcNode(mgstate->subplan);
+			CommandCounterIncrement();
 
 			switch (plan->operation)
 			{
@@ -188,11 +189,6 @@ ExecModifyGraph(PlanState *pstate)
 
 			if (TupIsNull(slot))
 				break;
-
-			if (plan->operation == GWROP_SET)
-			{
-				AssignSetKinds(mgstate, GSP_NORMAL, slot);
-			}
 
 			slot = mgstate->execProc(mgstate, slot);
 
@@ -582,7 +578,7 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 		{
 			ItemPointer ctid;
 
-			ctid = updateElemProp(mgstate, type, gid, entry->data.elem);
+			ctid = LegacyUpdateElemProp(mgstate, type, gid, entry->data.elem);
 
 			if (mgstate->eagerness)
 			{
@@ -738,6 +734,7 @@ openResultRelInfosIndices(ModifyGraphState *mgstate)
 {
 	int			index;
 	ResultRelInfo *resultRelInfo = mgstate->resultRelInfo;
+
 	for (index = 0; index < mgstate->numResultRelInfo; index++)
 	{
 		ExecOpenIndices(resultRelInfo, false);
