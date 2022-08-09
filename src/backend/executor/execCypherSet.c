@@ -18,6 +18,10 @@
 #include "access/tableam.h"
 #include "utils/lsyscache.h"
 #include "access/xact.h"
+#include "catalog/ag_vertex_d.h"
+#include "catalog/ag_edge_d.h"
+
+#define DatumGetItemPointer(X)	 ((ItemPointer) DatumGetPointer(X))
 
 static TupleTableSlot *copyVirtualTupleTableSlot(TupleTableSlot *dstslot,
 												 TupleTableSlot *srcslot);
@@ -25,32 +29,21 @@ static void findAndReflectNewestValue(ModifyGraphState *mgstate,
 									  TupleTableSlot *slot);
 static void updateElementTable(ModifyGraphState *mgstate, Datum gid,
 							   Datum newelem);
+static Datum GraphTableTupleUpdate(ModifyGraphState *mgstate,
+								   Oid tts_value_type, Datum tts_value);
 
-void
-AssignSetKinds(ModifyGraphState *mgstate, GSPKind kind, TupleTableSlot *slot)
-{
-	ExprContext *econtext = mgstate->ps.ps_ExprContext;
-
-	ResetExprContext(econtext);
-	econtext->ecxt_scantuple = slot;
-	mgstate->setkind = kind;
-}
-
+/*
+ * LegacyExecSetGraph
+ *
+ * It is used for Merge statements or Eager.
+ */
 TupleTableSlot *
-ExecSetGraphExt(ModifyGraphState *mgstate, TupleTableSlot *slot, GSPKind kind)
-{
-	mgstate->setkind = kind;
-	return ExecSetGraph(mgstate, slot);
-}
-
-TupleTableSlot *
-ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
+LegacyExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot, GSPKind kind)
 {
 	ModifyGraph *plan = (ModifyGraph *) mgstate->ps.plan;
 	ExprContext *econtext = mgstate->ps.ps_ExprContext;
 	ListCell   *ls;
 	TupleTableSlot *result = mgstate->ps.ps_ResultTupleSlot;
-	GSPKind		kind = mgstate->setkind;
 
 	/*
 	 * The results of previous clauses should be preserved. So, shallow
@@ -139,6 +132,50 @@ ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 	return (plan->last ? NULL : result);
 }
 
+/*
+ * ExecSetGraph
+ */
+TupleTableSlot *
+ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
+{
+	ModifyGraph *plan = (ModifyGraph *) mgstate->ps.plan;
+	bool	   *update_cols = palloc(sizeof(bool) * slot->tts_tupleDescriptor->natts);
+	int			i;
+	ListCell   *lc;
+
+	for (i = 0; i < slot->tts_tupleDescriptor->natts; i++)
+	{
+		update_cols[i] = false;
+		foreach(lc, mgstate->sets)
+		{
+			char	   *attr_name =
+			NameStr(slot->tts_tupleDescriptor->attrs[i].attname);
+			GraphSetProp *gsp = lfirst(lc);
+
+			if (strcmp(gsp->variable, attr_name) == 0)
+			{
+				update_cols[i] = true;
+				break;
+			}
+		}
+	}
+
+	for (i = 0; i < slot->tts_tupleDescriptor->natts; i++)
+	{
+		if (update_cols[i])
+		{
+			Datum		curDatum = slot->tts_values[i];
+			Oid			element_type = slot->tts_tupleDescriptor->attrs[i].atttypid;
+			Datum		affectedDatum = GraphTableTupleUpdate(mgstate, element_type,
+															  curDatum);
+
+			slot->tts_values[i] = affectedDatum;
+		}
+	}
+
+	return (plan->last ? NULL : slot);
+}
+
 static TupleTableSlot *
 copyVirtualTupleTableSlot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 {
@@ -202,10 +239,140 @@ findAndReflectNewestValue(ModifyGraphState *mgstate, TupleTableSlot *slot)
 	}
 }
 
+/*
+ * GraphTableTupleUpdate
+ * 		Update the tuple in the graph table.
+ *
+ * See ExecUpdate()
+ */
+static Datum
+GraphTableTupleUpdate(ModifyGraphState *mgstate, Oid tts_value_type,
+					  Datum tts_value)
+{
+	EState	   *estate = mgstate->ps.state;
+	TupleTableSlot *elemTupleSlot = mgstate->elemTupleSlot;
+	Datum	   *tts_values;
+	ResultRelInfo *resultRelInfo;
+	ResultRelInfo *savedResultRelInfo;
+	Relation	resultRelationDesc;
+	LockTupleMode lockmode;
+	TM_Result	result;
+	TM_FailureData tmfd;
+	bool		update_indexes;
+	Datum		gid;
+	Oid			relid;
+	ItemPointer ctid;
+
+	if (tts_value_type == VERTEXOID)
+	{
+		gid = getVertexIdDatum(tts_value);
+	}
+	else
+	{
+		gid = getEdgeIdDatum(tts_value);
+	}
+
+	relid = get_labid_relid(mgstate->graphid,
+							GraphidGetLabid(DatumGetGraphid(gid)));
+	resultRelInfo = getResultRelInfo(mgstate, relid);
+
+	savedResultRelInfo = estate->es_result_relation_info;
+	estate->es_result_relation_info = resultRelInfo;
+	resultRelationDesc = resultRelInfo->ri_RelationDesc;
+
+	/*
+	 * Create a tuple to store. Attributes of vertex/edge label are not the
+	 * same with those of vertex/edge.
+	 */
+	ExecClearTuple(elemTupleSlot);
+	ExecSetSlotDescriptor(elemTupleSlot,
+						  RelationGetDescr(resultRelInfo->ri_RelationDesc));
+	tts_values = elemTupleSlot->tts_values;
+
+	if (tts_value_type == VERTEXOID)
+	{
+		ctid = DatumGetItemPointer(getVertexTidDatum(tts_value));
+
+		tts_values[Anum_ag_vertex_id - 1] = gid;
+		tts_values[Anum_ag_vertex_properties - 1] = getVertexPropDatum(tts_value);
+	}
+	else
+	{
+		Assert(tts_value_type == EDGEOID);
+
+		ctid = DatumGetItemPointer(getEdgeTidDatum(tts_value));
+
+		tts_values[Anum_ag_edge_id - 1] = gid;
+		tts_values[Anum_ag_edge_start - 1] = getEdgeStartDatum(tts_value);
+		tts_values[Anum_ag_edge_end - 1] = getEdgeEndDatum(tts_value);
+		tts_values[Anum_ag_edge_properties - 1] = getEdgePropDatum(tts_value);
+	}
+	MemSet(elemTupleSlot->tts_isnull, false,
+		   elemTupleSlot->tts_tupleDescriptor->natts * sizeof(bool));
+	ExecStoreVirtualTuple(elemTupleSlot);
+
+	ExecMaterializeSlot(elemTupleSlot);
+	elemTupleSlot->tts_tableOid = RelationGetRelid(resultRelationDesc);
+
+	if (resultRelationDesc->rd_att->constr)
+		ExecConstraints(resultRelInfo, elemTupleSlot, estate);
+
+	result = table_tuple_update(resultRelationDesc, ctid, elemTupleSlot,
+								GetCurrentCommandId(true),
+								estate->es_snapshot,
+								estate->es_crosscheck_snapshot,
+								true /* wait for commit */ ,
+								&tmfd, &lockmode, &update_indexes);
+
+	switch (result)
+	{
+		case TM_SelfModified:
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("graph element(%hu," UINT64_FORMAT ") has been SET multiple times",
+							GraphidGetLabid(DatumGetGraphid(gid)),
+							GraphidGetLocid(DatumGetGraphid(gid)))));
+		case TM_Ok:
+			break;
+		case TM_Invisible:
+			elog(INFO, "Warn");
+			break;
+		case TM_Updated:
+			/* TODO: A solution to concurrent update is needed. */
+			ereport(ERROR,
+					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+					 errmsg("could not serialize access due to concurrent update")));
+		default:
+			elog(ERROR, "unrecognized heap_update status: %u", result);
+	}
+
+	if (resultRelInfo->ri_NumIndices > 0 && update_indexes)
+		ExecInsertIndexTuples(elemTupleSlot, estate, false, NULL, NIL);
+
+	graphWriteStats.updateProperty++;
+
+	estate->es_result_relation_info = savedResultRelInfo;
+
+	if (tts_value_type == VERTEXOID)
+	{
+		return makeGraphVertexDatum(gid,
+									tts_values[Anum_ag_vertex_properties - 1],
+									PointerGetDatum(&elemTupleSlot->tts_tid));
+	}
+	else
+	{
+		return makeGraphEdgeDatum(gid,
+								  tts_values[Anum_ag_edge_start - 1],
+								  tts_values[Anum_ag_edge_end - 1],
+								  tts_values[Anum_ag_edge_properties - 1],
+								  PointerGetDatum(&elemTupleSlot->tts_tid));
+	}
+}
+
 /* See ExecUpdate() */
 ItemPointer
-updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
-			   Datum elem_datum)
+LegacyUpdateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
+					 Datum elem_datum)
 {
 	EState	   *estate = mgstate->ps.state;
 	TupleTableSlot *elemTupleSlot = mgstate->elemTupleSlot;

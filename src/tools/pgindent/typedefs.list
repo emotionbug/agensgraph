@@ -3635,3 +3635,5 @@ find_target_label_context
 GraphSetProp
 GraphDelElem
 NestLoopVLE
+ExtTLE
+resolve_var_from_targetlist_context
