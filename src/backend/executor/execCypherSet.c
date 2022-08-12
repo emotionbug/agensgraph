@@ -20,6 +20,7 @@
 #include "access/xact.h"
 #include "catalog/ag_vertex_d.h"
 #include "catalog/ag_edge_d.h"
+#include "utils/jsonb.h"
 
 #define DatumGetItemPointer(X)	 ((ItemPointer) DatumGetPointer(X))
 
@@ -132,6 +133,46 @@ LegacyExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot, GSPKind kind
 	return (plan->last ? NULL : result);
 }
 
+static void debugFor(TupleTableSlot *slot)
+{
+	int i;
+	if (slot)
+	{
+		for (i = 0; i < slot->tts_tupleDescriptor->natts; i++)
+		{
+			Oid type_oid = slot->tts_tupleDescriptor
+					->attrs[i].atttypid;
+			elog(INFO, "Current x %d", i);
+			switch (type_oid) {
+				case GRAPHIDOID:
+				{
+					Datum id = slot->tts_values[i];
+					elog(INFO, "GRAPHID" "%hu." UINT64_FORMAT "",
+						 GraphidGetLabid(id), GraphidGetLocid(id));
+				}
+					break;
+				case JSONBOID:
+				{
+					// 1, 2, 3 이건 id properties tid. 이건 Vertex네 ?
+					Jsonb* jsonb = DatumGetJsonbP(slot
+														  ->tts_values[i]);
+					elog(INFO, "JSONB %s", JsonbToCString(NULL, &jsonb->root,
+														  VARSIZE(jsonb)));
+				}
+					;; // tidout
+				default:
+					elog(INFO, "TypeOid %d", type_oid);
+					break;
+			}
+//			appendStringInfo(&si, "%s[" GRAPHID_FMTSTR "]",
+//					NameStr(my_extra->label),
+//					GraphidGetLabid(id), GraphidGetLocid(id));
+		}
+
+	}
+
+}
+
 /*
  * ExecSetGraph
  */
@@ -139,27 +180,48 @@ TupleTableSlot *
 ExecSetGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 {
 	ModifyGraph *plan = (ModifyGraph *) mgstate->ps.plan;
-	bool	   *update_cols = palloc(sizeof(bool) * slot->tts_tupleDescriptor->natts);
+	bool	   *update_cols = mgstate->set_update_cols;
 	int			i;
 	ListCell   *lc;
 
-	for (i = 0; i < slot->tts_tupleDescriptor->natts; i++)
+	if (update_cols == NULL)
 	{
-		update_cols[i] = false;
-		foreach(lc, mgstate->sets)
-		{
-			char	   *attr_name =
-			NameStr(slot->tts_tupleDescriptor->attrs[i].attname);
-			GraphSetProp *gsp = lfirst(lc);
+		update_cols = palloc0(sizeof(bool) * slot->tts_tupleDescriptor->natts);
+		mgstate->set_update_cols = update_cols;
+		mgstate->num_update_cols = slot->tts_tupleDescriptor->natts;
 
-			if (strcmp(gsp->variable, attr_name) == 0)
+		for (i = 0; i < slot->tts_tupleDescriptor->natts; i++)
+		{
+			foreach(lc, mgstate->sets)
 			{
-				update_cols[i] = true;
-				break;
+				char	   *attr_name =
+				NameStr(slot->tts_tupleDescriptor->attrs[i].attname);
+				GraphSetProp *gsp = lfirst(lc);
+	
+				if (strcmp(gsp->variable, attr_name) == 0)
+				{
+					update_cols[i] = true;
+					break;
+				}
 			}
 		}
 	}
 
+	/*==========================
+	 * Case #1. ecxt_scantuple != NULL
+	 * SubPlan is Scan expr.
+	 * 
+	 * Case #2. ecxt_innertuple != NULL && ecxt_outertuple != NULL
+	 * SubPlan is join expr.
+	 */
+
+	ExprContext *subplan_econtext = mgstate->subplan->ps_ExprContext;
+	elog(INFO, "INNER");
+	debugFor(subplan_econtext->ecxt_innertuple);
+	elog(INFO, "OUTER");
+	debugFor(subplan_econtext->ecxt_outertuple);
+	elog(INFO, "SCAN");
+	debugFor(subplan_econtext->ecxt_scantuple);
 	for (i = 0; i < slot->tts_tupleDescriptor->natts; i++)
 	{
 		if (update_cols[i])
@@ -327,11 +389,7 @@ GraphTableTupleUpdate(ModifyGraphState *mgstate, Oid tts_value_type,
 	switch (result)
 	{
 		case TM_SelfModified:
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("graph element(%hu," UINT64_FORMAT ") has been SET multiple times",
-							GraphidGetLabid(DatumGetGraphid(gid)),
-							GraphidGetLocid(DatumGetGraphid(gid)))));
+			return tts_value;
 		case TM_Ok:
 			break;
 		case TM_Invisible:

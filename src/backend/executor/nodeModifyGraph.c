@@ -85,7 +85,13 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 	mgstate->graphid = get_graph_path_oid();
 	mgstate->pattern = ExecInitGraphPattern(mgplan->pattern, mgstate);
 	mgstate->exprs = ExecInitGraphDelExprs(mgplan->exprs, mgstate);
+
+	/*
+	 * Initialize Set operator state.
+	 */
 	mgstate->sets = ExecInitGraphSets(mgplan->sets, mgstate);
+	mgstate->set_update_cols = NULL;
+	mgstate->num_update_cols = 0;
 
 	mgstate->resultRelInfo = estate->es_result_relations + mgplan->resultRelIndex;
 	mgstate->numResultRelInfo = list_length(mgplan->resultRelations);
@@ -98,9 +104,10 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 						mgstate->mt_arowmarks[0]);
 
 	/* Fill eager action information */
-	if (mgstate->eagerness ||
+	if ((mgstate->eagerness ||
 		(mgstate->sets != NIL && enable_multiple_update) ||
-		mgstate->exprs != NIL)
+		mgstate->exprs != NIL) &&
+		mgplan->operation != GWROP_SET)
 	{
 		HASHCTL		ctl;
 
@@ -118,6 +125,7 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 	{
 		/* We will not use eager action */
 		mgstate->elemTable = NULL;
+		mgstate->tuplestorestate = NULL;
 	}
 
 	switch (mgplan->operation)
@@ -166,6 +174,7 @@ ExecModifyGraph(PlanState *pstate)
 			{
 				case GWROP_MERGE:
 				case GWROP_DELETE:
+				case GWROP_SET:
 					Increment_Estate_CommandId(estate);
 					break;
 				default:
@@ -174,12 +183,12 @@ ExecModifyGraph(PlanState *pstate)
 			}
 
 			slot = ExecProcNode(mgstate->subplan);
-			CommandCounterIncrement();
 
 			switch (plan->operation)
 			{
 				case GWROP_MERGE:
 				case GWROP_DELETE:
+				case GWROP_SET:
 					Decrement_Estate_CommandId(estate);
 					break;
 				default:
@@ -192,7 +201,7 @@ ExecModifyGraph(PlanState *pstate)
 
 			slot = mgstate->execProc(mgstate, slot);
 
-			if (mgstate->eagerness)
+			if (mgstate->tuplestorestate && mgstate->eagerness)
 			{
 				Assert(slot != NULL);
 
@@ -200,6 +209,7 @@ ExecModifyGraph(PlanState *pstate)
 			}
 			else if (slot != NULL)
 			{
+				CommandCounterIncrement();
 				return slot;
 			}
 			else
@@ -212,10 +222,13 @@ ExecModifyGraph(PlanState *pstate)
 		mgstate->child_done = true;
 
 		if (mgstate->elemTable != NULL)
+		{
 			reflectModifiedProp(mgstate);
+			CommandCounterIncrement();
+		}
 	}
 
-	if (mgstate->eagerness)
+	if (mgstate->eagerness && mgstate->tuplestorestate)
 	{
 		TupleTableSlot *result;
 		TupleDesc	tupDesc;
@@ -233,7 +246,11 @@ ExecModifyGraph(PlanState *pstate)
 
 		if (mgstate->elemTable == NULL ||
 			hash_get_num_entries(mgstate->elemTable) < 1)
+		{
+
+			CommandCounterIncrement();
 			return result;
+		}
 
 		tupDesc = result->tts_tupleDescriptor;
 		natts = tupDesc->natts;
@@ -286,6 +303,7 @@ ExecModifyGraph(PlanState *pstate)
 			setSlotValueByAttnum(result, elem, i + 1);
 		}
 
+		CommandCounterIncrement();
 		return result;
 	}
 
@@ -304,6 +322,9 @@ ExecEndModifyGraph(ModifyGraphState *mgstate)
 	if (mgstate->elemTable != NULL)
 		hash_destroy(mgstate->elemTable);
 
+	if (mgstate->set_update_cols != NULL)
+		pfree(mgstate->set_update_cols);
+
 	/*
 	 * clean out the tuple table
 	 */
@@ -311,8 +332,6 @@ ExecEndModifyGraph(ModifyGraphState *mgstate)
 
 	ExecEndNode(mgstate->subplan);
 	ExecFreeExprContext(&mgstate->ps);
-
-	CommandCounterIncrement();
 }
 
 static void
