@@ -149,7 +149,7 @@ GetNewLabelId(char *graphname, Oid graphid)
 		Datum val;
 
 		val = DirectFunctionCall1(nextval, stext);
-		labid = DatumGetUInt16(val);
+		labid = (uint16) DatumGetInt64(val);
 		if (!labid_exists(graphid, labid))
 			break;
 
