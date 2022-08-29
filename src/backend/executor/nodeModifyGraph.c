@@ -69,8 +69,8 @@ static TupleTableSlot *ExecDeleteGraph(ModifyGraphState *mgstate,
 									   TupleTableSlot *slot);
 static bool isDetachRequired(ModifyGraphState *mgstate);
 static bool isEdgeArrayOfPath(List *exprs, char *variable);
-static void deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid,
-					   Oid type);
+static void deleteElem(ModifyGraphState *mgstate, Graphid graphid,
+					   ItemPointer tid, Oid type);
 
 /* SET */
 static TupleTableSlot *ExecSetGraph(ModifyGraphState *mgstate, GSPKind kind,
@@ -81,7 +81,7 @@ static void findAndReflectNewestValue(ModifyGraphState *mgstate,
 									  TupleTableSlot *slot,
 									  bool free_slot);
 static ItemPointer updateElemProp(ModifyGraphState *mgstate, Oid elemtype,
-								  Datum gid, Datum elem_datum);
+								  Graphid graphid, Datum elem_datum);
 static Datum makeModifiedElem(Datum elem, Oid elemtype,
 							  Datum id, Datum prop_map, Datum tid);
 
@@ -114,6 +114,10 @@ static AttrNumber findAttrInSlotByName(TupleTableSlot *slot, char *name);
 static void setSlotValueByName(TupleTableSlot *slot, Datum value, char *name);
 static void setSlotValueByAttnum(TupleTableSlot *slot, Datum value, int attnum);
 static Datum *makeDatumArray(ExprContext *econtext, int len);
+static inline ModifiedElemEntry *findEntryFromElemTable(ModifyGraphState *mgstate,
+														Datum p_Graphid,
+														HASHACTION action,
+														bool *found);
 
 static void fitEStateRangeTable(EState* estate, int n);
 static void fitEStateRelations(EState *estate, int newsize);
@@ -1003,7 +1007,8 @@ isDetachRequired(ModifyGraphState *mgstate)
 }
 
 static void
-deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type)
+deleteElem(ModifyGraphState *mgstate, Graphid graphid, ItemPointer tid,
+		   Oid type)
 {
 	EState	   *estate = mgstate->ps.state;
 	Oid			relid;
@@ -1014,7 +1019,7 @@ deleteElem(ModifyGraphState *mgstate, Datum gid, ItemPointer tid, Oid type)
 	TM_FailureData tmfd;
 
 	relid = get_labid_relid(mgstate->graphid,
-							GraphidGetLabid(DatumGetGraphid(gid)));
+							GraphidGetLabid(graphid));
 	resultRelInfo = getResultRelInfo(mgstate, relid);
 
 	savedResultRelInfo = estate->es_result_relation_info;
@@ -1105,7 +1110,7 @@ ExecSetGraph(ModifyGraphState *mgstate, GSPKind kind, TupleTableSlot *slot)
 		Datum		elem_datum;
 		Datum		expr_datum;
 		bool		isNull;
-		Datum		gid;
+		Datum		p_graphid;
 		Datum		tid;
 		Datum		newelem;
 		MemoryContext oldmctx;
@@ -1141,14 +1146,14 @@ ExecSetGraph(ModifyGraphState *mgstate, GSPKind kind, TupleTableSlot *slot)
 		/* evaluate SET expression */
 		if (elemtype == VERTEXOID)
 		{
-			gid = getVertexIdDatum(elem_datum);
+			p_graphid = getVertexIdDatum(elem_datum);
 			tid = getVertexTidDatum(elem_datum);
 		}
 		else
 		{
 			Assert(elemtype == EDGEOID);
 
-			gid = getEdgeIdDatum(elem_datum);
+			p_graphid = getEdgeIdDatum(elem_datum);
 			tid = getEdgeTidDatum(elem_datum);
 		}
 
@@ -1158,14 +1163,17 @@ ExecSetGraph(ModifyGraphState *mgstate, GSPKind kind, TupleTableSlot *slot)
 					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 							errmsg("property map cannot be NULL")));
 
-		newelem = makeModifiedElem(elem_datum, elemtype, gid, expr_datum, tid);
+		newelem = makeModifiedElem(elem_datum, elemtype, p_graphid, expr_datum, tid);
 
 		MemoryContextSwitchTo(oldmctx);
 
 		if (mgstate->elemTable)
-			enterSetPropTable(mgstate, gid, newelem);
+			enterSetPropTable(mgstate, p_graphid, newelem);
 		else
-			updateElemProp(mgstate, elemtype, gid, newelem);
+			updateElemProp(mgstate,
+						   elemtype,
+						   DatumGetGraphid(p_graphid),
+						   newelem);
 
 		setSlotValueByName(result, newelem, gsp->variable);
 		/*
@@ -1249,7 +1257,7 @@ findAndReflectNewestValue(ModifyGraphState *mgstate, TupleTableSlot *slot,
 
 /* See ExecUpdate() */
 static ItemPointer
-updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
+updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Graphid graphid,
 			   Datum elem_datum)
 {
 	EState	   *estate = mgstate->ps.state;
@@ -1265,7 +1273,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	bool		update_indexes;
 
 	relid = get_labid_relid(mgstate->graphid,
-							GraphidGetLabid(DatumGetGraphid(gid)));
+							GraphidGetLabid(graphid));
 	resultRelInfo = getResultRelInfo(mgstate, relid);
 
 	savedResultRelInfo = estate->es_result_relation_info;
@@ -1281,7 +1289,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 						  RelationGetDescr(resultRelInfo->ri_RelationDesc));
 	if (elemtype == VERTEXOID)
 	{
-		elemTupleSlot->tts_values[0] = gid;
+		elemTupleSlot->tts_values[0] = GraphidGetDatum(graphid);
 		elemTupleSlot->tts_values[1] = getVertexPropDatum(elem_datum);
 
 		ctid = (ItemPointer) DatumGetPointer(getVertexTidDatum(elem_datum));
@@ -1290,7 +1298,7 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	{
 		Assert(elemtype == EDGEOID);
 
-		elemTupleSlot->tts_values[0] = gid;
+		elemTupleSlot->tts_values[0] = GraphidGetDatum(graphid);
 		elemTupleSlot->tts_values[1] = getEdgeStartDatum(elem_datum);
 		elemTupleSlot->tts_values[2] = getEdgeEndDatum(elem_datum);
 		elemTupleSlot->tts_values[3] = getEdgePropDatum(elem_datum);
@@ -1320,8 +1328,8 @@ updateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 							errmsg("graph element(%hu," UINT64_FORMAT ") has been SET multiple times",
-							GraphidGetLabid(DatumGetGraphid(gid)),
-							GraphidGetLocid(DatumGetGraphid(gid)))));
+							GraphidGetLabid(graphid),
+							GraphidGetLocid(graphid))));
 			break;
 		case TM_Ok:
 			break;
@@ -1653,7 +1661,10 @@ enterSetPropTable(ModifyGraphState *mgstate, Datum gid, Datum newelem)
 	ModifiedElemEntry *entry;
 	bool		found;
 
-	entry = hash_search(mgstate->elemTable, &gid, HASH_ENTER, &found);
+	entry = findEntryFromElemTable(mgstate,
+								   gid,
+								   HASH_ENTER,
+								   &found);
 	if (found)
 	{
 		if (enable_multiple_update)
@@ -1680,7 +1691,10 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 	{
 		gid = getVertexIdDatum(elem);
 
-		entry = hash_search(mgstate->elemTable, &gid, HASH_ENTER, &found);
+		entry = findEntryFromElemTable(mgstate,
+									   gid,
+									   HASH_ENTER,
+									   &found);
 		if (found)
 			return;
 
@@ -1691,7 +1705,10 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 	{
 		gid = getEdgeIdDatum(elem);
 
-		entry = hash_search(mgstate->elemTable, &gid, HASH_ENTER, &found);
+		entry = findEntryFromElemTable(mgstate,
+									   gid,
+									   HASH_ENTER,
+									   &found);
 		if (found)
 			return;
 		else
@@ -1735,7 +1752,10 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 			vtx = array_iter_next(&it, &isnull, i, typlen, typbyval, typalign);
 
 			gid = getVertexIdDatum(vtx);
-			entry = hash_search(mgstate->elemTable, &gid, HASH_ENTER, &found);
+			entry = findEntryFromElemTable(mgstate,
+										   gid,
+										   HASH_ENTER,
+										   &found);
 			if (found)
 				continue;
 
@@ -1767,7 +1787,10 @@ enterDelPropTable(ModifyGraphState *mgstate, Datum elem, Oid type)
 			edge = array_iter_next(&it, &isnull, i, typlen, typbyval, typalign);
 
 			gid = getEdgeIdDatum(edge);
-			entry = hash_search(mgstate->elemTable, &gid, HASH_ENTER, &found);
+			entry = findEntryFromElemTable(mgstate,
+										   gid,
+										   HASH_ENTER,
+										   &found);
 			if (found)
 				continue;
 			else
@@ -1802,7 +1825,10 @@ getVertexFinal(ModifyGraphState *mgstate, Datum origin)
 	Datum		gid = getVertexIdDatum(origin);
 	bool		found;
 
-	entry = hash_search(mgstate->elemTable, &gid, HASH_FIND, &found);
+	entry = findEntryFromElemTable(mgstate,
+								   gid,
+								   HASH_FIND,
+								   &found);
 
 	/* unmodified vertex */
 	if (!found)
@@ -1822,7 +1848,10 @@ getEdgeFinal(ModifyGraphState *mgstate, Datum origin)
 	bool		found;
 	ModifiedElemEntry *entry;
 
-	entry = hash_search(mgstate->elemTable, &gid, HASH_FIND, &found);
+	entry = findEntryFromElemTable(mgstate,
+								   gid,
+								   HASH_FIND,
+								   &found);
 
 	/* unmodified edge */
 	if (!found)
@@ -1948,20 +1977,20 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 	hash_seq_init(&seq, mgstate->elemTable);
 	while ((entry = hash_seq_search(&seq)) != NULL)
 	{
-		Datum	gid = PointerGetDatum(entry->key);
+		Graphid graphid = entry->key;
 		Oid		type;
 
 		type = get_labid_typeoid(mgstate->graphid,
-								 GraphidGetLabid(DatumGetGraphid(gid)));
+								 GraphidGetLabid(graphid));
 
 		/* write the object to heap */
 		if (plan->operation == GWROP_DELETE)
-			deleteElem(mgstate, gid, &entry->data.tid, type);
+			deleteElem(mgstate, graphid, &entry->data.tid, type);
 		else
 		{
 			ItemPointer	ctid;
 
-			ctid = updateElemProp(mgstate, type, gid, entry->data.elem);
+			ctid = updateElemProp(mgstate, type, graphid, entry->data.elem);
 
 			if (mgstate->eagerness)
 			{
@@ -1975,7 +2004,10 @@ reflectModifiedProp(ModifyGraphState *mgstate)
 				else
 					elog(ERROR, "unexpected graph type %d", type);
 
-				newelem = makeModifiedElem(entry->data.elem, type, gid,property,
+				newelem = makeModifiedElem(entry->data.elem,
+										   type,
+										   GraphidGetDatum(graphid),
+										   property,
 										   PointerGetDatum(ctid));
 
 				pfree(DatumGetPointer(entry->data.elem));
@@ -2095,6 +2127,20 @@ makeDatumArray(ExprContext *econtext, int len)
 		return NULL;
 
 	return palloc(len * sizeof(Datum));
+}
+
+static inline
+ModifiedElemEntry *
+findEntryFromElemTable(ModifyGraphState *mgstate,
+					   Datum p_Graphid,
+					   HASHACTION action,
+					   bool *found)
+{
+	ModifiedElemEntry *elem;
+	Graphid	   graphid = DatumGetGraphid(p_Graphid);
+	Assert(mgstate->elemTable != NULL);
+	elem = hash_search(mgstate->elemTable, &graphid, action, found);
+	return elem;
 }
 
 /*
