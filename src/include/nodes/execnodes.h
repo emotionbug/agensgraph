@@ -2555,6 +2555,7 @@ typedef struct ModifyGraphState
 	List	   *pattern;		/* graph pattern (list of paths) for CREATE
 								 * with `es_prop_map` */
 	List	   *exprs;			/* expression state list for DELETE */
+	List	   *edge_labels;	/* for detach delete */
 	List	   *sets;			/* list of GraphSetProp's for SET/REMOVE */
 	bool	   *update_cols;	/* array of columns to update */
 	HTAB	   *elemTable;

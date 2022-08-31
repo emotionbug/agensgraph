@@ -29,6 +29,7 @@
 #include "executor/execCypherSet.h"
 #include "executor/execCypherDelete.h"
 #include "executor/execCypherMerge.h"
+#include "catalog/ag_label_fn.h"
 
 bool		enable_multiple_update = true;
 bool		auto_gather_graphmeta = false;
@@ -136,8 +137,12 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 			mgstate->execProc = ExecCreateGraph;
 			break;
 		case GWROP_DELETE:
+		{
+			mgstate->edge_labels = get_all_edge_labels_per_graph(
+					estate->es_snapshot, mgstate->graphid);
 			mgstate->execProc = ExecDeleteGraph;
 			break;
+		}
 		case GWROP_SET:
 			mgstate->execProc = ExecSetGraph;
 			break;
