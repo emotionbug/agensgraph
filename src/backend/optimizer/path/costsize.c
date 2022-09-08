@@ -11,7 +11,7 @@
  *	cpu_tuple_cost		Cost of typical CPU time to process a tuple
  *	cpu_index_tuple_cost  Cost of typical CPU time to process an index tuple
  *	cpu_operator_cost	Cost of CPU time to execute an operator or function
- *	parallel_tuple_cost Cost of CPU time to pass a tuple from worker to master backend
+ *	parallel_tuple_cost Cost of CPU time to pass a tuple from worker to leader backend
  *	parallel_setup_cost Cost of setting up shared memory for parallelism
  *
  * We expect that the kernel will typically do some amount of read-ahead
@@ -60,7 +60,7 @@
  * values.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -107,6 +107,13 @@
  */
 #define APPEND_CPU_COST_MULTIPLIER 0.5
 
+/*
+ * Maximum value for row estimates.  We cap row estimates to this to help
+ * ensure that costs based on these estimates remain within the range of what
+ * double can represent.  add_path() wouldn't act sanely given infinite or NaN
+ * cost values.
+ */
+#define MAXIMUM_ROWCOUNT 1e100
 
 double		seq_page_cost = DEFAULT_SEQ_PAGE_COST;
 double		random_page_cost = DEFAULT_RANDOM_PAGE_COST;
@@ -128,10 +135,8 @@ bool		enable_indexonlyscan = true;
 bool		enable_bitmapscan = true;
 bool		enable_tidscan = true;
 bool		enable_sort = true;
-bool		enable_incrementalsort = true;
+bool		enable_incremental_sort = true;
 bool		enable_hashagg = true;
-bool		enable_hashagg_disk = true;
-bool		enable_groupingsets_hash_disk = false;
 bool		enable_nestloop = true;
 bool		enable_material = true;
 bool		enable_mergejoin = true;
@@ -191,11 +196,14 @@ double
 clamp_row_est(double nrows)
 {
 	/*
-	 * Force estimate to be at least one row, to make explain output look
-	 * better and to avoid possible divide-by-zero when interpolating costs.
-	 * Make it an integer, too.
+	 * Avoid infinite and NaN row estimates.  Costs derived from such values
+	 * are going to be useless.  Also force the estimate to be at least one
+	 * row, to make explain output look better and to avoid possible
+	 * divide-by-zero when interpolating costs.  Make it an integer, too.
 	 */
-	if (nrows <= 1.0)
+	if (nrows > MAXIMUM_ROWCOUNT || isnan(nrows))
+		nrows = MAXIMUM_ROWCOUNT;
+	else if (nrows <= 1.0)
 		nrows = 1.0;
 	else
 		nrows = rint(nrows);
@@ -1850,7 +1858,7 @@ cost_incremental_sort(Path *path,
 		 * Check if the expression contains Var with "varno 0" so that we
 		 * don't call estimate_num_groups in that case.
 		 */
-		if (bms_is_member(0, pull_varnos((Node *) member->em_expr)))
+		if (bms_is_member(0, pull_varnos(root, (Node *) member->em_expr)))
 		{
 			unknown_varno = true;
 			break;
@@ -2435,6 +2443,7 @@ cost_agg(Path *path, PlannerInfo *root,
 		double		pages;
 		double		pages_written = 0.0;
 		double		pages_read = 0.0;
+		double		spill_cost;
 		double		hashentrysize;
 		double		nbatches;
 		Size		mem_limit;
@@ -2447,7 +2456,8 @@ cost_agg(Path *path, PlannerInfo *root,
 		 * than or equal to one, all groups are expected to fit in memory;
 		 * otherwise we expect to spill.
 		 */
-		hashentrysize = hash_agg_entry_size(aggcosts->numAggs, input_width,
+		hashentrysize = hash_agg_entry_size(list_length(root->aggtransinfos),
+											input_width,
 											aggcosts->transitionSpace);
 		hash_agg_set_limits(hashentrysize, numGroups, 0, &mem_limit,
 							&ngroups_limit, &num_partitions);
@@ -2472,9 +2482,21 @@ cost_agg(Path *path, PlannerInfo *root,
 		pages = relation_byte_size(input_tuples, input_width) / BLCKSZ;
 		pages_written = pages_read = pages * depth;
 
+		/*
+		 * HashAgg has somewhat worse IO behavior than Sort on typical
+		 * hardware/OS combinations. Account for this with a generic penalty.
+		 */
+		pages_read *= 2.0;
+		pages_written *= 2.0;
+
 		startup_cost += pages_written * random_page_cost;
 		total_cost += pages_written * random_page_cost;
 		total_cost += pages_read * seq_page_cost;
+
+		/* account for CPU cost of spilling a tuple and reading it back */
+		spill_cost = depth * input_tuples * 2.0 * cpu_tuple_cost;
+		startup_cost += spill_cost;
+		total_cost += spill_cost;
 	}
 
 	/*
@@ -2743,12 +2765,11 @@ final_cost_nestloop(PlannerInfo *root, NestPath *path,
 	QualCost	restrict_qual_cost;
 	double		ntuples;
 
-	/* Protect some assumptions below that rowcounts aren't zero or NaN */
-	if (outer_path_rows <= 0 || isnan(outer_path_rows))
+	/* Protect some assumptions below that rowcounts aren't zero */
+	if (outer_path_rows <= 0)
 		outer_path_rows = 1;
-	if (inner_path_rows <= 0 || isnan(inner_path_rows))
+	if (inner_path_rows <= 0)
 		inner_path_rows = 1;
-
 	/* Mark the path with the correct row estimate */
 	if (path->path.param_info)
 		path->path.rows = path->path.param_info->ppi_rows;
@@ -2968,10 +2989,10 @@ initial_cost_mergejoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 				innerendsel;
 	Path		sort_path;		/* dummy for result of cost_sort */
 
-	/* Protect some assumptions below that rowcounts aren't zero or NaN */
-	if (outer_path_rows <= 0 || isnan(outer_path_rows))
+	/* Protect some assumptions below that rowcounts aren't zero */
+	if (outer_path_rows <= 0)
 		outer_path_rows = 1;
-	if (inner_path_rows <= 0 || isnan(inner_path_rows))
+	if (inner_path_rows <= 0)
 		inner_path_rows = 1;
 
 	/*
@@ -3201,8 +3222,8 @@ final_cost_mergejoin(PlannerInfo *root, MergePath *path,
 				rescannedtuples;
 	double		rescanratio;
 
-	/* Protect some assumptions below that rowcounts aren't zero or NaN */
-	if (inner_path_rows <= 0 || isnan(inner_path_rows))
+	/* Protect some assumptions below that rowcounts aren't zero */
+	if (inner_path_rows <= 0)
 		inner_path_rows = 1;
 
 	/* Mark the path with the correct row estimate */
@@ -3554,7 +3575,7 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	 * Get hash table size that executor would use for inner relation.
 	 *
 	 * XXX for the moment, always assume that skew optimization will be
-	 * performed.  As long as SKEW_WORK_MEM_PERCENT is small, it's not worth
+	 * performed.  As long as SKEW_HASH_MEM_PERCENT is small, it's not worth
 	 * trying to determine that for sure.
 	 *
 	 * XXX at some point it might be interesting to try to account for skew
@@ -3563,7 +3584,7 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
 	ExecChooseHashTableSize(inner_path_rows_total,
 							inner_path->pathtarget->width,
 							true,	/* useskew */
-							parallel_hash,	/* try_combined_work_mem */
+							parallel_hash,	/* try_combined_hash_mem */
 							outer_path->parallel_workers,
 							&space_allowed,
 							&numbuckets,
@@ -3626,6 +3647,7 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 	Cost		run_cost = workspace->run_cost;
 	int			numbuckets = workspace->numbuckets;
 	int			numbatches = workspace->numbatches;
+	int			hash_mem;
 	Cost		cpu_per_tuple;
 	QualCost	hash_qual_cost;
 	QualCost	qp_qual_cost;
@@ -3744,16 +3766,17 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 	}
 
 	/*
-	 * If the bucket holding the inner MCV would exceed work_mem, we don't
+	 * If the bucket holding the inner MCV would exceed hash_mem, we don't
 	 * want to hash unless there is really no other alternative, so apply
 	 * disable_cost.  (The executor normally copes with excessive memory usage
 	 * by splitting batches, but obviously it cannot separate equal values
-	 * that way, so it will be unable to drive the batch size below work_mem
+	 * that way, so it will be unable to drive the batch size below hash_mem
 	 * when this is true.)
 	 */
+	hash_mem = get_hash_mem();
 	if (relation_byte_size(clamp_row_est(inner_path_rows * innermcvfreq),
 						   inner_path->pathtarget->width) >
-		(work_mem * 1024L))
+		(hash_mem * 1024L))
 		startup_cost += disable_cost;
 
 	/*
@@ -5082,9 +5105,16 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 		 * remove back into the worklist.
 		 *
 		 * Since the matching clauses are known not outerjoin-delayed, they
-		 * should certainly have appeared in the initial joinclause list.  If
-		 * we didn't find them, they must have been matched to, and removed
-		 * by, some other FK in a previous iteration of this loop.  (A likely
+		 * would normally have appeared in the initial joinclause list.  If we
+		 * didn't find them, there are two possibilities:
+		 *
+		 * 1. If the FK match is based on an EC that is ec_has_const, it won't
+		 * have generated any join clauses at all.  We discount such ECs while
+		 * checking to see if we have "all" the clauses.  (Below, we'll adjust
+		 * the selectivity estimate for this case.)
+		 *
+		 * 2. The clauses were matched to some other FK in a previous
+		 * iteration of this loop, and thus removed from worklist.  (A likely
 		 * case is that two FKs are matched to the same EC; there will be only
 		 * one EC-derived clause in the initial list, so the first FK will
 		 * consume it.)  Applying both FKs' selectivity independently risks
@@ -5094,8 +5124,9 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 		 * Later we might think of a reasonable way to combine the estimates,
 		 * but for now, just punt, since this is a fairly uncommon situation.
 		 */
-		if (list_length(removedlist) !=
-			(fkinfo->nmatched_ec + fkinfo->nmatched_ri))
+		if (removedlist == NIL ||
+			list_length(removedlist) !=
+			(fkinfo->nmatched_ec - fkinfo->nconst_ec + fkinfo->nmatched_ri))
 		{
 			worklist = list_concat(worklist, removedlist);
 			continue;
@@ -5154,9 +5185,48 @@ get_foreign_key_join_selectivity(PlannerInfo *root,
 
 			fkselec *= 1.0 / ref_tuples;
 		}
+
+		/*
+		 * If any of the FK columns participated in ec_has_const ECs, then
+		 * equivclass.c will have generated "var = const" restrictions for
+		 * each side of the join, thus reducing the sizes of both input
+		 * relations.  Taking the fkselec at face value would amount to
+		 * double-counting the selectivity of the constant restriction for the
+		 * referencing Var.  Hence, look for the restriction clause(s) that
+		 * were applied to the referencing Var(s), and divide out their
+		 * selectivity to correct for this.
+		 */
+		if (fkinfo->nconst_ec > 0)
+		{
+			for (int i = 0; i < fkinfo->nkeys; i++)
+			{
+				EquivalenceClass *ec = fkinfo->eclass[i];
+
+				if (ec && ec->ec_has_const)
+				{
+					EquivalenceMember *em = fkinfo->fk_eclass_member[i];
+					RestrictInfo *rinfo = find_derived_clause_for_ec_member(ec,
+																			em);
+
+					if (rinfo)
+					{
+						Selectivity s0;
+
+						s0 = clause_selectivity(root,
+												(Node *) rinfo,
+												0,
+												jointype,
+												sjinfo);
+						if (s0 > 0)
+							fkselec /= s0;
+					}
+				}
+			}
+		}
 	}
 
 	*restrictlist = worklist;
+	CLAMP_PROBABILITY(fkselec);
 	return fkselec;
 }
 

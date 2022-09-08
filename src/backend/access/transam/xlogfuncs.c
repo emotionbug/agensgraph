@@ -7,7 +7,7 @@
  * This file contains WAL control and information functions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/transam/xlogfuncs.c
@@ -76,7 +76,7 @@ pg_start_backup(PG_FUNCTION_ARGS)
 	if (exclusive)
 	{
 		startpoint = do_pg_start_backup(backupidstr, fast, NULL, NULL,
-										NULL, NULL, false, true);
+										NULL, NULL, true);
 	}
 	else
 	{
@@ -94,7 +94,7 @@ pg_start_backup(PG_FUNCTION_ARGS)
 		register_persistent_abort_backup_handler();
 
 		startpoint = do_pg_start_backup(backupidstr, fast, NULL, label_file,
-										NULL, tblspc_map_file, false, true);
+										NULL, tblspc_map_file, true);
 	}
 
 	PG_RETURN_LSN(startpoint);

@@ -22,7 +22,7 @@
  * The Windows implementation uses Windows events that are inherited by all
  * postmaster child processes. There's no need for the self-pipe trick there.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -56,6 +56,7 @@
 #include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "storage/shmem.h"
+#include "utils/memutils.h"
 
 /*
  * Select the fd readiness primitive to use. Normally the "most modern"
@@ -128,6 +129,12 @@ struct WaitEventSet
 	HANDLE	   *handles;
 #endif
 };
+
+/* A common WaitEventSet used to implement WatchLatch() */
+static WaitEventSet *LatchWaitSet;
+
+/* The position of the latch in LatchWaitSet. */
+#define LatchWaitSetLatchPos 0
 
 #ifndef WIN32
 /* Are we currently in WaitLatch? The signal handler would like to know. */
@@ -240,6 +247,24 @@ InitializeLatchSupport(void)
 #else
 	/* currently, nothing to do here for Windows */
 #endif
+}
+
+void
+InitializeLatchWaitSet(void)
+{
+	int			latch_pos PG_USED_FOR_ASSERTS_ONLY;
+
+	Assert(LatchWaitSet == NULL);
+
+	/* Set up the WaitEventSet used by WaitLatch(). */
+	LatchWaitSet = CreateWaitEventSet(TopMemoryContext, 2);
+	latch_pos = AddWaitEventToSet(LatchWaitSet, WL_LATCH_SET, PGINVALID_SOCKET,
+								  MyLatch, NULL);
+	if (IsUnderPostmaster)
+		AddWaitEventToSet(LatchWaitSet, WL_EXIT_ON_PM_DEATH,
+						  PGINVALID_SOCKET, NULL, NULL);
+
+	Assert(latch_pos == LatchWaitSetLatchPos);
 }
 
 /*
@@ -365,8 +390,31 @@ int
 WaitLatch(Latch *latch, int wakeEvents, long timeout,
 		  uint32 wait_event_info)
 {
-	return WaitLatchOrSocket(latch, wakeEvents, PGINVALID_SOCKET, timeout,
-							 wait_event_info);
+	WaitEvent	event;
+
+	/* Postmaster-managed callers must handle postmaster death somehow. */
+	Assert(!IsUnderPostmaster ||
+		   (wakeEvents & WL_EXIT_ON_PM_DEATH) ||
+		   (wakeEvents & WL_POSTMASTER_DEATH));
+
+	/*
+	 * Some callers may have a latch other than MyLatch, or no latch at all,
+	 * or want to handle postmaster death differently.  It's cheap to assign
+	 * those, so just do it every time.
+	 */
+	if (!(wakeEvents & WL_LATCH_SET))
+		latch = NULL;
+	ModifyWaitEvent(LatchWaitSet, LatchWaitSetLatchPos, WL_LATCH_SET, latch);
+	LatchWaitSet->exit_on_postmaster_death =
+		((wakeEvents & WL_EXIT_ON_PM_DEATH) != 0);
+
+	if (WaitEventSetWait(LatchWaitSet,
+						 (wakeEvents & WL_TIMEOUT) ? timeout : -1,
+						 &event, 1,
+						 wait_event_info) == 0)
+		return WL_TIMEOUT;
+	else
+		return event.events;
 }
 
 /*
@@ -830,7 +878,8 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 
 /*
  * Change the event mask and, in the WL_LATCH_SET case, the latch associated
- * with the WaitEvent.
+ * with the WaitEvent.  The latch may be changed to NULL to disable the latch
+ * temporarily, and then set back to a latch later.
  *
  * 'pos' is the id returned by AddWaitEventToSet.
  */
@@ -862,7 +911,6 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 	if (event->events & WL_LATCH_SET &&
 		events != event->events)
 	{
-		/* we could allow to disable latch events for a while */
 		elog(ERROR, "cannot modify latch event");
 	}
 
@@ -876,7 +924,22 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 
 	if (events == WL_LATCH_SET)
 	{
+		if (latch && latch->owner_pid != MyProcPid)
+			elog(ERROR, "cannot wait on a latch owned by another process");
 		set->latch = latch;
+		/*
+		 * On Unix, we don't need to modify the kernel object because the
+		 * underlying pipe is the same for all latches so we can return
+		 * immediately.  On Windows, we need to update our array of handles,
+		 * but we leave the old one in place and tolerate spurious wakeups if
+		 * the latch is disabled.
+		 */
+#if defined(WAIT_USE_WIN32)
+		if (!latch)
+			return;
+#else
+		return;
+#endif
 	}
 
 #if defined(WAIT_USE_EPOLL)
@@ -1085,7 +1148,8 @@ WaitEventAdjustKqueue(WaitEventSet *set, WaitEvent *event, int old_events)
 
 	if (rc < 0)
 	{
-		if (event->events == WL_POSTMASTER_DEATH && errno == ESRCH)
+		if (event->events == WL_POSTMASTER_DEATH &&
+			(errno == ESRCH || errno == EACCES))
 			set->report_postmaster_not_running = true;
 		else
 			ereport(ERROR,
@@ -1338,7 +1402,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 			/* There's data in the self-pipe, clear it. */
 			drainSelfPipe();
 
-			if (set->latch->is_set)
+			if (set->latch && set->latch->is_set)
 			{
 				occurred_events->fd = PGINVALID_SOCKET;
 				occurred_events->events = WL_LATCH_SET;
@@ -1429,7 +1493,10 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		timeout_p = &timeout;
 	}
 
-	/* Report events discovered by WaitEventAdjustKqueue(). */
+	/*
+	 * Report postmaster events discovered by WaitEventAdjustKqueue() or an
+	 * earlier call to WaitEventSetWait().
+	 */
 	if (unlikely(set->report_postmaster_not_running))
 	{
 		if (set->exit_on_postmaster_death)
@@ -1488,7 +1555,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 			/* There's data in the self-pipe, clear it. */
 			drainSelfPipe();
 
-			if (set->latch->is_set)
+			if (set->latch && set->latch->is_set)
 			{
 				occurred_events->fd = PGINVALID_SOCKET;
 				occurred_events->events = WL_LATCH_SET;
@@ -1500,6 +1567,13 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 				 cur_kqueue_event->filter == EVFILT_PROC &&
 				 (cur_kqueue_event->fflags & NOTE_EXIT) != 0)
 		{
+			/*
+			 * The kernel will tell this kqueue object only once about the exit
+			 * of the postmaster, so let's remember that for next time so that
+			 * we provide level-triggered semantics.
+			 */
+			set->report_postmaster_not_running = true;
+
 			if (set->exit_on_postmaster_death)
 				proc_exit(1);
 			occurred_events->fd = PGINVALID_SOCKET;
@@ -1597,7 +1671,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 			/* There's data in the self-pipe, clear it. */
 			drainSelfPipe();
 
-			if (set->latch->is_set)
+			if (set->latch && set->latch->is_set)
 			{
 				occurred_events->fd = PGINVALID_SOCKET;
 				occurred_events->events = WL_LATCH_SET;
@@ -1761,10 +1835,14 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 
 	if (cur_event->events == WL_LATCH_SET)
 	{
-		if (!ResetEvent(set->latch->event))
+		/*
+		 * We cannot use set->latch->event to reset the fired event if we
+		 * aren't waiting on this latch now.
+		 */
+		if (!ResetEvent(set->handles[cur_event->pos + 1]))
 			elog(ERROR, "ResetEvent failed: error code %lu", GetLastError());
 
-		if (set->latch->is_set)
+		if (set->latch && set->latch->is_set)
 		{
 			occurred_events->fd = PGINVALID_SOCKET;
 			occurred_events->events = WL_LATCH_SET;

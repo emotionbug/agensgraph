@@ -3,7 +3,7 @@
  * execParallel.c
  *	  Support routines for parallel execution.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * This file contains routines that are intended to support setting up,
@@ -25,6 +25,7 @@
 
 #include "executor/execParallel.h"
 #include "executor/executor.h"
+#include "executor/nodeAgg.h"
 #include "executor/nodeAppend.h"
 #include "executor/nodeBitmapHeapscan.h"
 #include "executor/nodeCustom.h"
@@ -183,7 +184,6 @@ ExecSerializePlan(Plan *plan, EState *estate)
 	pstmt->planTree = plan;
 	pstmt->rtable = estate->es_range_table;
 	pstmt->resultRelations = NIL;
-	pstmt->rootResultRelations = NIL;
 	pstmt->appendRelations = NIL;
 
 	/*
@@ -288,7 +288,10 @@ ExecParallelEstimate(PlanState *planstate, ExecParallelEstimateContext *e)
 			/* even when not parallel-aware, for EXPLAIN ANALYZE */
 			ExecIncrementalSortEstimate((IncrementalSortState *) planstate, e->pcxt);
 			break;
-
+		case T_AggState:
+			/* even when not parallel-aware, for EXPLAIN ANALYZE */
+			ExecAggEstimate((AggState *) planstate, e->pcxt);
+			break;
 		default:
 			break;
 	}
@@ -505,7 +508,10 @@ ExecParallelInitializeDSM(PlanState *planstate,
 			/* even when not parallel-aware, for EXPLAIN ANALYZE */
 			ExecIncrementalSortInitializeDSM((IncrementalSortState *) planstate, d->pcxt);
 			break;
-
+		case T_AggState:
+			/* even when not parallel-aware, for EXPLAIN ANALYZE */
+			ExecAggInitializeDSM((AggState *) planstate, d->pcxt);
+			break;
 		default:
 			break;
 	}
@@ -1048,6 +1054,9 @@ ExecParallelRetrieveInstrumentation(PlanState *planstate,
 		case T_HashState:
 			ExecHashRetrieveInstrumentation((HashState *) planstate);
 			break;
+		case T_AggState:
+			ExecAggRetrieveInstrumentation((AggState *) planstate);
+			break;
 		default:
 			break;
 	}
@@ -1336,7 +1345,10 @@ ExecParallelInitializeWorker(PlanState *planstate, ParallelWorkerContext *pwcxt)
 			ExecIncrementalSortInitializeWorker((IncrementalSortState *) planstate,
 												pwcxt);
 			break;
-
+		case T_AggState:
+			/* even when not parallel-aware, for EXPLAIN ANALYZE */
+			ExecAggInitializeWorker((AggState *) planstate, pwcxt);
+			break;
 		default:
 			break;
 	}

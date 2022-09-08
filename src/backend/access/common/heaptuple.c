@@ -45,7 +45,7 @@
  * and we'd like to still refer to them via C struct offsets.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -736,7 +736,7 @@ expand_tuple(HeapTuple *targetHeapTuple,
 {
 	AttrMissing *attrmiss = NULL;
 	int			attnum;
-	int			firstmissingnum = 0;
+	int			firstmissingnum;
 	bool		hasNulls = HeapTupleHasNulls(sourceTuple);
 	HeapTupleHeader targetTHeader;
 	HeapTupleHeader sourceTHeader = sourceTuple->t_data;

@@ -3,7 +3,7 @@
  * basebackup.h
  *	  Exports from replication/basebackup.c.
  *
- * Portions Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *
  * src/include/replication/basebackup.h
  *
@@ -13,9 +13,6 @@
 #define _BASEBACKUP_H
 
 #include "nodes/replnodes.h"
-
-struct backup_manifest_info;	/* avoid including backup_manifest.h */
-
 
 /*
  * Minimum and maximum values of MAX_RATE option in BASE_BACKUP command.
@@ -32,8 +29,5 @@ typedef struct
 } tablespaceinfo;
 
 extern void SendBaseBackup(BaseBackupCmd *cmd);
-
-extern int64 sendTablespace(char *path, char *oid, bool sizeonly,
-							struct backup_manifest_info *manifest);
 
 #endif							/* _BASEBACKUP_H */

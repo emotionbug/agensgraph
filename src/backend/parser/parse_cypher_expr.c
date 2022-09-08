@@ -46,6 +46,7 @@
 #include "utils/fmgroids.h"
 #include "utils/jsonb.h"
 #include "optimizer/optimizer.h"
+#include "nodes/subscripting.h"
 
 static Node *transformCypherExprRecurse(ParseState *pstate, Node *expr);
 static Node *transformColumnRef(ParseState *pstate, ColumnRef *cref);
@@ -1120,9 +1121,9 @@ func_match_argtypes_jsonb(int nargs, Oid argtypes[FUNC_MAX_ARGS],
 		*candidates = current_candidate;
 		ncandidates++;
 
-		if (current_candidate->oid == F_ARRAY_HEAD ||
-			current_candidate->oid == F_ARRAY_LAST ||
-			current_candidate->oid == F_ARRAY_TAIL)
+		if (current_candidate->oid == F_HEAD_ANYARRAY ||
+			current_candidate->oid == F_LAST_ANYARRAY ||
+			current_candidate->oid == F_TAIL_ANYARRAY)
 			return 1;
 	}
 
@@ -1605,6 +1606,7 @@ transformIndirection(ParseState *pstate, A_Indirection *indir)
 			int32			arrtypmod;
 			Oid				elemtype;
 			SubscriptingRef	*aref;
+			const SubscriptRoutines *sbsroutines;
 
 			Assert(IsA(i, A_Indices));
 
@@ -1621,7 +1623,19 @@ transformIndirection(ParseState *pstate, A_Indirection *indir)
 
 			arrtype = restype;
 			arrtypmod = exprTypmod(res);
-			elemtype = transformContainerType(&arrtype, &arrtypmod);
+			transformContainerType(&arrtype, &arrtypmod);
+
+			/*
+			 * Verify that the container type is subscriptable, and get its support
+			 * functions and typelem.
+			 */
+			sbsroutines = getSubscriptingRoutines(arrtype, &elemtype);
+			if (!sbsroutines)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+								errmsg("cannot subscript type %s because it does not support subscripting",
+									   format_type_be(arrtype)),
+								parser_errposition(pstate, exprLocation(res))));
 
 			aref = makeNode(SubscriptingRef);
 			aref->refcontainertype = arrtype;
@@ -1631,6 +1645,23 @@ transformIndirection(ParseState *pstate, A_Indirection *indir)
 			aref->reflowerindexpr = (ind->is_slice ? list_make1(lidx) : NIL);
 			aref->refexpr = (Expr *) res;
 			aref->refassgnexpr = NULL;
+
+			/*
+			 * Call the container-type-specific logic to transform the subscripts and
+			 * determine the subscripting result type.
+			 */
+			sbsroutines->transform(aref, list_make1(ind), pstate,
+								   ind->is_slice, true);
+
+			/*
+			 * Verify we got a valid type (this defends, for example, against someone
+			 * using array_subscript_handler as typsubscript without setting typelem).
+			 */
+			if (!OidIsValid(aref->refrestype))
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+								errmsg("cannot subscript type %s because it does not support subscripting",
+									   format_type_be(arrtype))));
 
 			res = (Node *) aref;
 		}

@@ -2,7 +2,7 @@
  * slot.h
  *	   Replication slot management.
  *
- * Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2021, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -78,6 +78,9 @@ typedef struct ReplicationSlotPersistentData
 
 	/* oldest LSN that might be required by this replication slot */
 	XLogRecPtr	restart_lsn;
+
+	/* restart_lsn is copied here when the slot is invalidated */
+	XLogRecPtr	invalidated_at;
 
 	/*
 	 * Oldest LSN that the client has acked receipt for.  This is used as the
@@ -207,6 +210,7 @@ extern XLogRecPtr ReplicationSlotsComputeLogicalRestartLSN(void);
 extern bool ReplicationSlotsCountDBSlots(Oid dboid, int *nslots, int *nactive);
 extern void ReplicationSlotsDropDBSlots(Oid dboid);
 extern void InvalidateObsoleteReplicationSlots(XLogSegNo oldestSegno);
+extern ReplicationSlot *SearchNamedReplicationSlot(const char *name);
 
 extern void StartupReplicationSlots(void);
 extern void CheckPointReplicationSlots(void);

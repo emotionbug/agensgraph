@@ -198,7 +198,7 @@ sub tap_check
 	  unless $config->{tap_tests};
 
 	my @flags;
-	foreach my $arg (0 .. scalar(@_))
+	foreach my $arg (0 .. scalar(@_) - 1)
 	{
 		next unless $_[$arg] =~ /^PROVE_FLAGS=(.*)/;
 		@flags = split(/\s+/, $1);
@@ -571,8 +571,6 @@ sub upgradecheck
 	my $outputdir          = "$tmp_root/regress";
 	my @EXTRA_REGRESS_OPTS = ("--outputdir=$outputdir");
 	mkdir "$outputdir"                || die $!;
-	mkdir "$outputdir/sql"            || die $!;
-	mkdir "$outputdir/expected"       || die $!;
 	mkdir "$outputdir/testtablespace" || die $!;
 
 	my $logdir = "$topdir/src/bin/pg_upgrade/log";
@@ -608,8 +606,6 @@ sub upgradecheck
 	print "\nStarting new cluster\n\n";
 	@args = ('pg_ctl', '-l', "$logdir/postmaster2.log", 'start');
 	system(@args) == 0 or exit 1;
-	print "\nSetting up stats on new cluster\n\n";
-	system(".\\analyze_new_cluster.bat") == 0 or exit 1;
 	print "\nDumping new cluster\n\n";
 	@args = ('pg_dumpall', '-f', "$tmp_root/dump2.sql");
 	system(@args) == 0 or exit 1;

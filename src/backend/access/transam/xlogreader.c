@@ -3,7 +3,7 @@
  * xlogreader.c
  *		Generic XLog reading facility
  *
- * Portions Copyright (c) 2013-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2013-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/backend/access/transam/xlogreader.c
@@ -44,6 +44,8 @@ static bool ValidXLogRecordHeader(XLogReaderState *state, XLogRecPtr RecPtr,
 static bool ValidXLogRecord(XLogReaderState *state, XLogRecord *record,
 							XLogRecPtr recptr);
 static void ResetDecoder(XLogReaderState *state);
+static void WALOpenSegmentInit(WALOpenSegment *seg, WALSegmentContext *segcxt,
+							   int segsize, const char *waldir);
 
 /* size of the buffer allocated for error message. */
 #define MAX_ERRORMSG_LEN 1000
@@ -210,7 +212,7 @@ allocate_recordbuf(XLogReaderState *state, uint32 reclength)
 /*
  * Initialize the passed segment structs.
  */
-void
+static void
 WALOpenSegmentInit(WALOpenSegment *seg, WALSegmentContext *segcxt,
 				   int segsize, const char *waldir)
 {
@@ -462,8 +464,9 @@ XLogReadRecord(XLogReaderState *state, char **errormsg)
 				total_len != (pageHeader->xlp_rem_len + gotlen))
 			{
 				report_invalid_record(state,
-									  "invalid contrecord length %u at %X/%X",
+									  "invalid contrecord length %u (expected %lld) at %X/%X",
 									  pageHeader->xlp_rem_len,
+									  ((long long) total_len) - gotlen,
 									  (uint32) (RecPtr >> 32), (uint32) RecPtr);
 				goto err;
 			}
@@ -1195,6 +1198,7 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 
 	state->decoded_record = record;
 	state->record_origin = InvalidRepOriginId;
+	state->toplevel_xid = InvalidTransactionId;
 
 	ptr = (char *) record;
 	ptr += SizeOfXLogRecord;
@@ -1232,6 +1236,10 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 		else if (block_id == XLR_BLOCK_ID_ORIGIN)
 		{
 			COPY_HEADER_FIELD(&state->record_origin, sizeof(RepOriginId));
+		}
+		else if (block_id == XLR_BLOCK_ID_TOPLEVEL_XID)
+		{
+			COPY_HEADER_FIELD(&state->toplevel_xid, sizeof(TransactionId));
 		}
 		else if (block_id <= XLR_MAX_BLOCK_ID)
 		{
@@ -1537,7 +1545,7 @@ XLogRecGetBlockData(XLogReaderState *record, uint8 block_id, Size *len)
 /*
  * Restore a full-page image from a backup block attached to an XLOG record.
  *
- * Returns the buffer number containing the page.
+ * Returns true if a full-page image is restored.
  */
 bool
 RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
@@ -1606,8 +1614,8 @@ XLogRecGetFullXid(XLogReaderState *record)
 	Assert(AmStartupProcess() || !IsUnderPostmaster);
 
 	xid = XLogRecGetXid(record);
-	next_xid = XidFromFullTransactionId(ShmemVariableCache->nextFullXid);
-	epoch = EpochFromFullTransactionId(ShmemVariableCache->nextFullXid);
+	next_xid = XidFromFullTransactionId(ShmemVariableCache->nextXid);
+	epoch = EpochFromFullTransactionId(ShmemVariableCache->nextXid);
 
 	/*
 	 * If xid is numerically greater than next_xid, it has to be from the last

@@ -285,7 +285,6 @@ GraphTableTupleUpdate(ModifyGraphState *mgstate, Oid tts_value_type,
 	TupleTableSlot *elemTupleSlot = mgstate->elemTupleSlot;
 	Datum	   *tts_values;
 	ResultRelInfo *resultRelInfo;
-	ResultRelInfo *savedResultRelInfo;
 	Relation	resultRelationDesc;
 	LockTupleMode lockmode;
 	TM_Result	result;
@@ -329,8 +328,6 @@ GraphTableTupleUpdate(ModifyGraphState *mgstate, Oid tts_value_type,
 							GraphidGetLabid(DatumGetGraphid(gid)));
 	resultRelInfo = getResultRelInfo(mgstate, relid);
 
-	savedResultRelInfo = estate->es_result_relation_info;
-	estate->es_result_relation_info = resultRelInfo;
 	resultRelationDesc = resultRelInfo->ri_RelationDesc;
 
 	/*
@@ -484,11 +481,9 @@ lreplace:
 	}
 
 	if (resultRelInfo->ri_NumIndices > 0 && update_indexes)
-		recheckIndexes = ExecInsertIndexTuples(elemTupleSlot,
-											   estate,
-											   false,
-											   NULL,
-											   NIL);
+		recheckIndexes = ExecInsertIndexTuples(resultRelInfo, elemTupleSlot,
+											   estate, false, true,
+											   NULL, NIL);
 
 	graphWriteStats.updateProperty++;
 
@@ -497,8 +492,6 @@ lreplace:
 						 recheckIndexes, NULL);
 
 	list_free(recheckIndexes);
-
-	estate->es_result_relation_info = savedResultRelInfo;
 
 	entry = hash_search(mgstate->elemTable, &gid, HASH_ENTER, &hash_found);
 
@@ -531,7 +524,6 @@ LegacyUpdateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	Oid			relid;
 	ItemPointer ctid;
 	ResultRelInfo *resultRelInfo;
-	ResultRelInfo *savedResultRelInfo;
 	Relation	resultRelationDesc;
 	LockTupleMode lockmode;
 	TM_Result	result;
@@ -543,8 +535,6 @@ LegacyUpdateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 							GraphidGetLabid(DatumGetGraphid(gid)));
 	resultRelInfo = getResultRelInfo(mgstate, relid);
 
-	savedResultRelInfo = estate->es_result_relation_info;
-	estate->es_result_relation_info = resultRelInfo;
 	resultRelationDesc = resultRelInfo->ri_RelationDesc;
 
 	/*
@@ -621,11 +611,9 @@ LegacyUpdateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 	}
 
 	if (resultRelInfo->ri_NumIndices > 0 && update_indexes)
-		recheckIndexes = ExecInsertIndexTuples(elemTupleSlot,
-											   estate,
-											   false,
-											   NULL,
-											   NIL);
+		recheckIndexes = ExecInsertIndexTuples(resultRelInfo, elemTupleSlot,
+											   estate, false, true,
+											   NULL, NIL);
 
 	graphWriteStats.updateProperty++;
 
@@ -634,8 +622,6 @@ LegacyUpdateElemProp(ModifyGraphState *mgstate, Oid elemtype, Datum gid,
 						 recheckIndexes, NULL);
 
 	list_free(recheckIndexes);
-
-	estate->es_result_relation_info = savedResultRelInfo;
 
 	return &elemTupleSlot->tts_tid;
 }

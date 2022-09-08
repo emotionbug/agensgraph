@@ -3,7 +3,7 @@
  * explain.c
  *	  Explain query execution plans
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  * IDENTIFICATION
@@ -117,7 +117,8 @@ static void show_instrumentation_count(const char *qlabel, int which,
 static void show_foreignscan_info(ForeignScanState *fsstate, ExplainState *es);
 static void show_eval_params(Bitmapset *bms_params, ExplainState *es);
 static const char *explain_get_index_name(Oid indexId);
-static void show_buffer_usage(ExplainState *es, const BufferUsage *usage);
+static void show_buffer_usage(ExplainState *es, const BufferUsage *usage,
+							  bool planning);
 static void show_wal_usage(ExplainState *es, const WalUsage *usage);
 static void ExplainIndexScanDetails(Oid indexid, ScanDirection indexorderdir,
 									ExplainState *es);
@@ -223,11 +224,6 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 							opt->defname),
 					 parser_errposition(pstate, opt->location)));
 	}
-
-	if (es->buffers && !es->analyze)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("EXPLAIN option BUFFERS requires ANALYZE")));
 
 	if (es->wal && !es->analyze)
 		ereport(ERROR,
@@ -442,6 +438,22 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 		CreateTableAsStmt *ctas = (CreateTableAsStmt *) utilityStmt;
 		List	   *rewritten;
 
+		/*
+		 * Check if the relation exists or not.  This is done at this stage to
+		 * avoid query planning or execution.
+		 */
+		if (CreateTableAsRelExists(ctas))
+		{
+			if (ctas->objtype == OBJECT_TABLE)
+				ExplainDummyGroup("CREATE TABLE AS", NULL, es);
+			else if (ctas->objtype == OBJECT_MATVIEW)
+				ExplainDummyGroup("CREATE MATERIALIZED VIEW", NULL, es);
+			else
+				elog(ERROR,	"unexpected object type: %d",
+					 (int) ctas->objtype);
+			return;
+		}
+
 		rewritten = QueryRewrite(castNode(Query, copyObject(ctas->query)));
 		Assert(list_length(rewritten) == 1);
 		ExplainOneQuery(linitial_node(Query, rewritten),
@@ -589,8 +601,13 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 	/* Create textual dump of plan tree */
 	ExplainPrintPlan(es, queryDesc);
 
-	if (es->summary && (planduration || bufusage))
+	/* Show buffer usage in planning */
+	if (bufusage)
+	{
 		ExplainOpenGroup("Planning", "Planning", true, es);
+		show_buffer_usage(es, bufusage, true);
+		ExplainCloseGroup("Planning", "Planning", true, es);
+	}
 
 	if (es->summary && planduration)
 	{
@@ -598,19 +615,6 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 
 		ExplainPropertyFloat("Planning Time", "ms", 1000.0 * plantime, 3, es);
 	}
-
-	/* Show buffer usage */
-	if (es->summary && bufusage)
-	{
-		if (es->format == EXPLAIN_FORMAT_TEXT)
-			es->indent++;
-		show_buffer_usage(es, bufusage);
-		if (es->format == EXPLAIN_FORMAT_TEXT)
-			es->indent--;
-	}
-
-	if (es->summary && (planduration || bufusage))
-		ExplainCloseGroup("Planning", "Planning", true, es);
 
 	/* Print info about runtime of triggers */
 	if (es->analyze)
@@ -784,27 +788,24 @@ ExplainPrintTriggers(ExplainState *es, QueryDesc *queryDesc)
 {
 	ResultRelInfo *rInfo;
 	bool		show_relname;
-	int			numrels = queryDesc->estate->es_num_result_relations;
-	int			numrootrels = queryDesc->estate->es_num_root_result_relations;
+	List	   *resultrels;
 	List	   *routerels;
 	List	   *targrels;
-	int			nr;
 	ListCell   *l;
 
+	resultrels = queryDesc->estate->es_opened_result_relations;
 	routerels = queryDesc->estate->es_tuple_routing_result_relations;
 	targrels = queryDesc->estate->es_trig_target_relations;
 
 	ExplainOpenGroup("Triggers", "Triggers", false, es);
 
-	show_relname = (numrels > 1 || numrootrels > 0 ||
+	show_relname = (list_length(resultrels) > 1 ||
 					routerels != NIL || targrels != NIL);
-	rInfo = queryDesc->estate->es_result_relations;
-	for (nr = 0; nr < numrels; rInfo++, nr++)
+	foreach(l, resultrels)
+	{
+		rInfo = (ResultRelInfo *) lfirst(l);
 		report_triggers(rInfo, show_relname, es);
-
-	rInfo = queryDesc->estate->es_root_result_relations;
-	for (nr = 0; nr < numrootrels; rInfo++, nr++)
-		report_triggers(rInfo, show_relname, es);
+	}
 
 	foreach(l, routerels)
 	{
@@ -1502,7 +1503,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				explain_get_index_name(bitmapindexscan->indexid);
 
 				if (es->format == EXPLAIN_FORMAT_TEXT)
-					appendStringInfo(es->str, " on %s", indexname);
+					appendStringInfo(es->str, " on %s",
+									 quote_identifier(indexname));
 				else
 					ExplainPropertyText("Index Name", indexname, es);
 			}
@@ -2112,7 +2114,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 
 	/* Show buffer/WAL usage */
 	if (es->buffers && planstate->instrument)
-		show_buffer_usage(es, &planstate->instrument->bufusage);
+		show_buffer_usage(es, &planstate->instrument->bufusage, false);
 	if (es->wal && planstate->instrument)
 		show_wal_usage(es, &planstate->instrument->walusage);
 
@@ -2131,7 +2133,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 
 			ExplainOpenWorker(n, es);
 			if (es->buffers)
-				show_buffer_usage(es, &instrument->bufusage);
+				show_buffer_usage(es, &instrument->bufusage, false);
 			if (es->wal)
 				show_wal_usage(es, &instrument->walusage);
 			ExplainCloseWorker(n, es);
@@ -2797,7 +2799,7 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 		TuplesortInstrumentation stats;
 		const char *sortMethod;
 		const char *spaceType;
-		long		spaceUsed;
+		int64		spaceUsed;
 
 		tuplesort_get_stats(state, &stats);
 		sortMethod = tuplesort_method_name(stats.sortMethod);
@@ -2807,7 +2809,7 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 		if (es->format == EXPLAIN_FORMAT_TEXT)
 		{
 			ExplainIndentText(es);
-			appendStringInfo(es->str, "Sort Method: %s  %s: %ldkB\n",
+			appendStringInfo(es->str, "Sort Method: %s  %s: " INT64_FORMAT "kB\n",
 							 sortMethod, spaceType, spaceUsed);
 		}
 		else
@@ -2836,7 +2838,7 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 			TuplesortInstrumentation *sinstrument;
 			const char *sortMethod;
 			const char *spaceType;
-			long		spaceUsed;
+			int64		spaceUsed;
 
 			sinstrument = &sortstate->shared_info->sinstrument[n];
 			if (sinstrument->sortMethod == SORT_TYPE_STILL_IN_PROGRESS)
@@ -2852,7 +2854,7 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 			{
 				ExplainIndentText(es);
 				appendStringInfo(es->str,
-								 "Sort Method: %s  %s: %ldkB\n",
+								 "Sort Method: %s  %s: " INT64_FORMAT "kB\n",
 								 sortMethod, spaceType, spaceUsed);
 			}
 			else
@@ -2904,35 +2906,35 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 						 groupInfo->groupCount);
 		/* plural/singular based on methodNames size */
 		if (list_length(methodNames) > 1)
-			appendStringInfo(es->str, "s: ");
+			appendStringInfoString(es->str, "s: ");
 		else
-			appendStringInfo(es->str, ": ");
+			appendStringInfoString(es->str, ": ");
 		foreach(methodCell, methodNames)
 		{
-			appendStringInfo(es->str, "%s", (char *) methodCell->ptr_value);
+			appendStringInfoString(es->str, (char *) methodCell->ptr_value);
 			if (foreach_current_index(methodCell) < list_length(methodNames) - 1)
-				appendStringInfo(es->str, ", ");
+				appendStringInfoString(es->str, ", ");
 		}
 
 		if (groupInfo->maxMemorySpaceUsed > 0)
 		{
-			long		avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
+			int64		avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
 			const char *spaceTypeName;
 
 			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_MEMORY);
-			appendStringInfo(es->str, "  Average %s: %ldkB  Peak %s: %ldkB",
+			appendStringInfo(es->str, "  Average %s: " INT64_FORMAT "kB  Peak %s: " INT64_FORMAT "kB",
 							 spaceTypeName, avgSpace,
 							 spaceTypeName, groupInfo->maxMemorySpaceUsed);
 		}
 
 		if (groupInfo->maxDiskSpaceUsed > 0)
 		{
-			long		avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
+			int64		avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
 
 			const char *spaceTypeName;
 
 			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_DISK);
-			appendStringInfo(es->str, "  Average %s: %ldkB  Peak %s: %ldkB",
+			appendStringInfo(es->str, "  Average %s: " INT64_FORMAT "kB  Peak %s: " INT64_FORMAT "kB",
 							 spaceTypeName, avgSpace,
 							 spaceTypeName, groupInfo->maxDiskSpaceUsed);
 		}
@@ -2950,7 +2952,7 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 
 		if (groupInfo->maxMemorySpaceUsed > 0)
 		{
-			long		avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
+			int64		avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
 			const char *spaceTypeName;
 			StringInfoData memoryName;
 
@@ -2963,11 +2965,11 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 			ExplainPropertyInteger("Peak Sort Space Used", "kB",
 								   groupInfo->maxMemorySpaceUsed, es);
 
-			ExplainCloseGroup("Sort Spaces", memoryName.data, true, es);
+			ExplainCloseGroup("Sort Space", memoryName.data, true, es);
 		}
 		if (groupInfo->maxDiskSpaceUsed > 0)
 		{
-			long		avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
+			int64		avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
 			const char *spaceTypeName;
 			StringInfoData diskName;
 
@@ -2980,7 +2982,7 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 			ExplainPropertyInteger("Peak Sort Space Used", "kB",
 								   groupInfo->maxDiskSpaceUsed, es);
 
-			ExplainCloseGroup("Sort Spaces", diskName.data, true, es);
+			ExplainCloseGroup("Sort Space", diskName.data, true, es);
 		}
 
 		ExplainCloseGroup("Incremental Sort Groups", groupName.data, true, es);
@@ -3018,11 +3020,11 @@ show_incremental_sort_info(IncrementalSortState *incrsortstate,
 		if (prefixsortGroupInfo->groupCount > 0)
 		{
 			if (es->format == EXPLAIN_FORMAT_TEXT)
-				appendStringInfo(es->str, "\n");
+				appendStringInfoChar(es->str, '\n');
 			show_incremental_sort_group_info(prefixsortGroupInfo, "Pre-sorted", true, es);
 		}
 		if (es->format == EXPLAIN_FORMAT_TEXT)
-			appendStringInfo(es->str, "\n");
+			appendStringInfoChar(es->str, '\n');
 	}
 
 	if (incrsortstate->shared_info != NULL)
@@ -3061,11 +3063,11 @@ show_incremental_sort_info(IncrementalSortState *incrsortstate,
 			if (prefixsortGroupInfo->groupCount > 0)
 			{
 				if (es->format == EXPLAIN_FORMAT_TEXT)
-					appendStringInfo(es->str, "\n");
+					appendStringInfoChar(es->str, '\n');
 				show_incremental_sort_group_info(prefixsortGroupInfo, "Pre-sorted", true, es);
 			}
 			if (es->format == EXPLAIN_FORMAT_TEXT)
-				appendStringInfo(es->str, "\n");
+				appendStringInfoChar(es->str, '\n');
 
 			if (es->workers_state)
 				ExplainCloseWorker(n, es);
@@ -3232,29 +3234,116 @@ show_hashagg_info(AggState *aggstate, ExplainState *es)
 	Agg		   *agg = (Agg *) aggstate->ss.ps.plan;
 	int64		memPeakKb = (aggstate->hash_mem_peak + 1023) / 1024;
 
-	Assert(IsA(aggstate, AggState));
-
 	if (agg->aggstrategy != AGG_HASHED &&
 		agg->aggstrategy != AGG_MIXED)
 		return;
 
-	if (es->costs && aggstate->hash_planned_partitions > 0)
+	if (es->format != EXPLAIN_FORMAT_TEXT)
 	{
-		ExplainPropertyInteger("Planned Partitions", NULL,
-							   aggstate->hash_planned_partitions, es);
+
+		if (es->costs)
+			ExplainPropertyInteger("Planned Partitions", NULL,
+								   aggstate->hash_planned_partitions, es);
+
+		/*
+		 * During parallel query the leader may have not helped out.  We
+		 * detect this by checking how much memory it used.  If we find it
+		 * didn't do any work then we don't show its properties.
+		 */
+		if (es->analyze && aggstate->hash_mem_peak > 0)
+		{
+			ExplainPropertyInteger("HashAgg Batches", NULL,
+								   aggstate->hash_batches_used, es);
+			ExplainPropertyInteger("Peak Memory Usage", "kB", memPeakKb, es);
+			ExplainPropertyInteger("Disk Usage", "kB",
+								   aggstate->hash_disk_used, es);
+		}
+	}
+	else
+	{
+		bool		gotone = false;
+
+		if (es->costs && aggstate->hash_planned_partitions > 0)
+		{
+			ExplainIndentText(es);
+			appendStringInfo(es->str, "Planned Partitions: %d",
+							 aggstate->hash_planned_partitions);
+			gotone = true;
+		}
+
+		/*
+		 * During parallel query the leader may have not helped out.  We
+		 * detect this by checking how much memory it used.  If we find it
+		 * didn't do any work then we don't show its properties.
+		 */
+		if (es->analyze && aggstate->hash_mem_peak > 0)
+		{
+			if (!gotone)
+				ExplainIndentText(es);
+			else
+				appendStringInfoString(es->str, "  ");
+
+			appendStringInfo(es->str, "Batches: %d  Memory Usage: " INT64_FORMAT "kB",
+							 aggstate->hash_batches_used, memPeakKb);
+			gotone = true;
+
+			/* Only display disk usage if we spilled to disk */
+			if (aggstate->hash_batches_used > 1)
+			{
+				appendStringInfo(es->str, "  Disk Usage: " UINT64_FORMAT "kB",
+					aggstate->hash_disk_used);
+			}
+		}
+
+		if (gotone)
+			appendStringInfoChar(es->str, '\n');
 	}
 
-	if (!es->analyze)
-		return;
-
-	/* EXPLAIN ANALYZE */
-	ExplainPropertyInteger("Peak Memory Usage", "kB", memPeakKb, es);
-	if (aggstate->hash_batches_used > 0)
+	/* Display stats for each parallel worker */
+	if (es->analyze && aggstate->shared_info != NULL)
 	{
-		ExplainPropertyInteger("Disk Usage", "kB",
-							   aggstate->hash_disk_used, es);
-		ExplainPropertyInteger("HashAgg Batches", NULL,
-							   aggstate->hash_batches_used, es);
+		for (int n = 0; n < aggstate->shared_info->num_workers; n++)
+		{
+			AggregateInstrumentation *sinstrument;
+			uint64		hash_disk_used;
+			int			hash_batches_used;
+
+			sinstrument = &aggstate->shared_info->sinstrument[n];
+			/* Skip workers that didn't do anything */
+			if (sinstrument->hash_mem_peak == 0)
+				continue;
+			hash_disk_used = sinstrument->hash_disk_used;
+			hash_batches_used = sinstrument->hash_batches_used;
+			memPeakKb = (sinstrument->hash_mem_peak + 1023) / 1024;
+
+			if (es->workers_state)
+				ExplainOpenWorker(n, es);
+
+			if (es->format == EXPLAIN_FORMAT_TEXT)
+			{
+				ExplainIndentText(es);
+
+				appendStringInfo(es->str, "Batches: %d  Memory Usage: " INT64_FORMAT "kB",
+								 hash_batches_used, memPeakKb);
+
+				/* Only display disk usage if we spilled to disk */
+				if (hash_batches_used > 1)
+					appendStringInfo(es->str, "  Disk Usage: " UINT64_FORMAT "kB",
+									 hash_disk_used);
+				appendStringInfoChar(es->str, '\n');
+			}
+			else
+			{
+				ExplainPropertyInteger("HashAgg Batches", NULL,
+									   hash_batches_used, es);
+				ExplainPropertyInteger("Peak Memory Usage", "kB", memPeakKb,
+									   es);
+				ExplainPropertyInteger("Disk Usage", "kB", hash_disk_used, es);
+			}
+
+			if (es->workers_state)
+				ExplainCloseWorker(n, es);
+		}
 	}
 }
 
@@ -3366,6 +3455,10 @@ show_eval_params(Bitmapset *bms_params, ExplainState *es)
  *
  * We allow plugins to get control here so that plans involving hypothetical
  * indexes can be explained.
+ *
+ * Note: names returned by this function should be "raw"; the caller will
+ * apply quoting if needed.  Formerly the convention was to do quoting here,
+ * but we don't want that in non-text output formats.
  */
 static const char *
 explain_get_index_name(Oid indexId)
@@ -3378,11 +3471,10 @@ explain_get_index_name(Oid indexId)
 		result = NULL;
 	if (result == NULL)
 	{
-		/* default behavior: look in the catalogs and quote it */
+		/* default behavior: look it up in the catalogs */
 		result = get_rel_name(indexId);
 		if (result == NULL)
 			elog(ERROR, "cache lookup failed for index %u", indexId);
-		result = quote_identifier(result);
 	}
 	return result;
 }
@@ -3391,7 +3483,7 @@ explain_get_index_name(Oid indexId)
  * Show buffer usage details.
  */
 static void
-show_buffer_usage(ExplainState *es, const BufferUsage *usage)
+show_buffer_usage(ExplainState *es, const BufferUsage *usage, bool planning)
 {
 	if (es->format == EXPLAIN_FORMAT_TEXT)
 	{
@@ -3407,6 +3499,15 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage)
 								usage->temp_blks_written > 0);
 		bool		has_timing = (!INSTR_TIME_IS_ZERO(usage->blk_read_time) ||
 								  !INSTR_TIME_IS_ZERO(usage->blk_write_time));
+		bool		show_planning = (planning && (has_shared ||
+												  has_local || has_temp || has_timing));
+
+		if (show_planning)
+		{
+			ExplainIndentText(es);
+			appendStringInfoString(es->str, "Planning:\n");
+			es->indent++;
+		}
 
 		/* Show only positive counter values. */
 		if (has_shared || has_local || has_temp)
@@ -3476,6 +3577,9 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage)
 								 INSTR_TIME_GET_MILLISEC(usage->blk_write_time));
 			appendStringInfoChar(es->str, '\n');
 		}
+
+		if (show_planning)
+			es->indent--;
 	}
 	else
 	{
@@ -3562,7 +3666,7 @@ ExplainIndexScanDetails(Oid indexid, ScanDirection indexorderdir,
 	{
 		if (ScanDirectionIsBackward(indexorderdir))
 			appendStringInfoString(es->str, " Backward");
-		appendStringInfo(es->str, " using %s", indexname);
+		appendStringInfo(es->str, " using %s", quote_identifier(indexname));
 	}
 	else
 	{
@@ -3771,7 +3875,7 @@ show_modifytable_info(ModifyTableState *mtstate, List *ancestors,
 	/* Should we explicitly label target relations? */
 	labeltargets = (mtstate->mt_nplans > 1 ||
 					(mtstate->mt_nplans == 1 &&
-					 mtstate->resultRelInfo->ri_RangeTableIndex != node->nominalRelation));
+					 mtstate->resultRelInfo[0].ri_RangeTableIndex != node->nominalRelation));
 
 	if (labeltargets)
 		ExplainOpenGroup("Target Tables", "Target Tables", false, es);
@@ -4419,7 +4523,7 @@ ExplainOpenGroup(const char *objtype, const char *labelname,
 			/*
 			 * In YAML format, the grouping stack is an integer list.  0 means
 			 * we've emitted nothing at this grouping level AND this grouping
-			 * level is unlabelled and must be marked with "- ".  See
+			 * level is unlabeled and must be marked with "- ".  See
 			 * ExplainYAMLLineStarting().
 			 */
 			ExplainYAMLLineStarting(es);
@@ -4782,7 +4886,7 @@ ExplainJSONLineEnding(ExplainState *es)
  *
  * YAML lines are ordinarily indented by two spaces per indentation level.
  * The text emitted for each property begins just prior to the preceding
- * line-break, except for the first property in an unlabelled group, for which
+ * line-break, except for the first property in an unlabeled group, for which
  * it begins immediately after the "- " that introduces the group.  The first
  * property of the group appears on the same line as the opening "- ".
  */

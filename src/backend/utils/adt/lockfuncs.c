@@ -3,7 +3,7 @@
  * lockfuncs.c
  *		Functions for SQL access to various lock-manager capabilities.
  *
- * Copyright (c) 2002-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/backend/utils/adt/lockfuncs.c
@@ -29,6 +29,7 @@
 const char *const LockTagTypeNames[] = {
 	"relation",
 	"extend",
+	"frozenid",
 	"page",
 	"tuple",
 	"transactionid",
@@ -246,6 +247,17 @@ pg_lock_status(PG_FUNCTION_ARGS)
 			case LOCKTAG_RELATION_EXTEND:
 				values[1] = ObjectIdGetDatum(instance->locktag.locktag_field1);
 				values[2] = ObjectIdGetDatum(instance->locktag.locktag_field2);
+				nulls[3] = true;
+				nulls[4] = true;
+				nulls[5] = true;
+				nulls[6] = true;
+				nulls[7] = true;
+				nulls[8] = true;
+				nulls[9] = true;
+				break;
+			case LOCKTAG_DATABASE_FROZEN_IDS:
+				values[1] = ObjectIdGetDatum(instance->locktag.locktag_field1);
+				nulls[2] = true;
 				nulls[3] = true;
 				nulls[4] = true;
 				nulls[5] = true;
@@ -617,7 +629,7 @@ pg_isolation_test_session_is_blocked(PG_FUNCTION_ARGS)
 	 * Check if any of these are in the list of interesting PIDs, that being
 	 * the sessions that the isolation tester is running.  We don't use
 	 * "arrayoverlaps" here, because it would lead to cache lookups and one of
-	 * our goals is to run quickly under CLOBBER_CACHE_ALWAYS.  We expect
+	 * our goals is to run quickly with debug_invalidate_system_caches_always > 0.  We expect
 	 * blocking_pids to be usually empty and otherwise a very small number in
 	 * isolation tester cases, so make that the outer loop of a naive search
 	 * for a match.
@@ -632,7 +644,7 @@ pg_isolation_test_session_is_blocked(PG_FUNCTION_ARGS)
 	/*
 	 * Check if blocked_pid is waiting for a safe snapshot.  We could in
 	 * theory check the resulting array of blocker PIDs against the
-	 * interesting PIDs whitelist, but since there is no danger of autovacuum
+	 * interesting PIDs list, but since there is no danger of autovacuum
 	 * blocking GetSafeSnapshot there seems to be no point in expending cycles
 	 * on allocating a buffer and searching for overlap; so it's presently
 	 * sufficient for the isolation tester's purposes to use a single element

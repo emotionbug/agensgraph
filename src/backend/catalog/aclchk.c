@@ -3,7 +3,7 @@
  * aclchk.c
  *	  Routines to check access control permissions.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -364,6 +364,22 @@ ExecuteGrantStmt(GrantStmt *stmt)
 	ListCell   *cell;
 	const char *errormsg;
 	AclMode		all_privileges;
+
+	if (stmt->grantor)
+	{
+		Oid			grantor;
+
+		grantor = get_rolespec_oid(stmt->grantor, false);
+
+		/*
+		 * Currently, this clause is only for SQL compatibility, not very
+		 * interesting otherwise.
+		 */
+		if (grantor != GetUserId())
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("grantor must be current user")));
+	}
 
 	/*
 	 * Turn the regular GrantStmt into the InternalGrant form.
@@ -1367,6 +1383,9 @@ SetDefaultACL(InternalDefaultACL *iacls)
 		ReleaseSysCache(tuple);
 
 	table_close(rel, RowExclusiveLock);
+
+	/* prevent error when processing duplicate objects */
+	CommandCounterIncrement();
 }
 
 
@@ -1497,39 +1516,6 @@ RemoveRoleFromObjectACL(Oid roleid, Oid classid, Oid objid)
 
 		ExecGrantStmt_oids(&istmt);
 	}
-}
-
-
-/*
- * Remove a pg_default_acl entry
- */
-void
-RemoveDefaultACLById(Oid defaclOid)
-{
-	Relation	rel;
-	ScanKeyData skey[1];
-	SysScanDesc scan;
-	HeapTuple	tuple;
-
-	rel = table_open(DefaultAclRelationId, RowExclusiveLock);
-
-	ScanKeyInit(&skey[0],
-				Anum_pg_default_acl_oid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(defaclOid));
-
-	scan = systable_beginscan(rel, DefaultAclOidIndexId, true,
-							  NULL, 1, skey);
-
-	tuple = systable_getnext(scan);
-
-	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "could not find tuple for default ACL %u", defaclOid);
-
-	CatalogTupleDelete(rel, &tuple->t_self);
-
-	systable_endscan(scan);
-	table_close(rel, RowExclusiveLock);
 }
 
 
@@ -3149,7 +3135,7 @@ ExecGrant_Type(InternalGrant *istmt)
 
 		pg_type_tuple = (Form_pg_type) GETSTRUCT(tuple);
 
-		if (pg_type_tuple->typelem != 0 && pg_type_tuple->typlen == -1)
+		if (IsTrueArrayType(pg_type_tuple))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_GRANT_OPERATION),
 					 errmsg("cannot set privileges of array types"),
@@ -4451,7 +4437,7 @@ pg_type_aclmask(Oid type_oid, Oid roleid, AclMode mask, AclMaskHow how)
 	 * "True" array types don't manage permissions of their own; consult the
 	 * element type instead.
 	 */
-	if (OidIsValid(typeForm->typelem) && typeForm->typlen == -1)
+	if (IsTrueArrayType(typeForm))
 	{
 		Oid			elttype_oid = typeForm->typelem;
 

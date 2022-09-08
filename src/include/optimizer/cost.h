@@ -4,7 +4,7 @@
  *	  prototypes for costsize.c and clausesel.c.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/cost.h
@@ -20,7 +20,7 @@
 
 /* defaults for costsize.c's Cost parameters */
 /* NB: cost-estimation code should use the variables, not these constants! */
-/* If you change these, update backend/utils/misc/postgresql.sample.conf */
+/* If you change these, update backend/utils/misc/postgresql.conf.sample */
 #define DEFAULT_SEQ_PAGE_COST  1.0
 #define DEFAULT_RANDOM_PAGE_COST  4.0
 #define DEFAULT_CPU_TUPLE_COST	0.01
@@ -54,10 +54,8 @@ extern PGDLLIMPORT bool enable_indexonlyscan;
 extern PGDLLIMPORT bool enable_bitmapscan;
 extern PGDLLIMPORT bool enable_tidscan;
 extern PGDLLIMPORT bool enable_sort;
-extern PGDLLIMPORT bool enable_incrementalsort;
+extern PGDLLIMPORT bool enable_incremental_sort;
 extern PGDLLIMPORT bool enable_hashagg;
-extern PGDLLIMPORT bool enable_hashagg_disk;
-extern PGDLLIMPORT bool enable_groupingsets_hash_disk;
 extern PGDLLIMPORT bool enable_nestloop;
 extern PGDLLIMPORT bool enable_material;
 extern PGDLLIMPORT bool enable_mergejoin;

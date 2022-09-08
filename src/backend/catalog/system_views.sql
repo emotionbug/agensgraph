@@ -1,7 +1,7 @@
 /*
  * PostgreSQL System Views
  *
- * Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Copyright (c) 1996-2021, PostgreSQL Global Development Group
  *
  * src/backend/catalog/system_views.sql
  *
@@ -554,6 +554,12 @@ CREATE VIEW pg_shmem_allocations AS
 REVOKE ALL ON pg_shmem_allocations FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION pg_get_shmem_allocations() FROM PUBLIC;
 
+CREATE VIEW pg_backend_memory_contexts AS
+    SELECT * FROM pg_get_backend_memory_contexts();
+
+REVOKE ALL ON pg_backend_memory_contexts FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION pg_get_backend_memory_contexts() FROM PUBLIC;
+
 -- Statistics views
 
 CREATE VIEW pg_stat_all_tables AS
@@ -785,13 +791,22 @@ CREATE VIEW pg_stat_replication AS
             W.replay_lag,
             W.sync_priority,
             W.sync_state,
-            W.reply_time,
-            W.spill_txns,
-            W.spill_count,
-            W.spill_bytes
+            W.reply_time
     FROM pg_stat_get_activity(NULL) AS S
         JOIN pg_stat_get_wal_senders() AS W ON (S.pid = W.pid)
         LEFT JOIN pg_authid AS U ON (S.usesysid = U.oid);
+
+CREATE VIEW pg_stat_replication_slots AS
+    SELECT
+            s.slot_name,
+            s.spill_txns,
+            s.spill_count,
+            s.spill_bytes,
+            s.stream_txns,
+            s.stream_count,
+            s.stream_bytes,
+            s.stats_reset
+    FROM pg_stat_get_replication_slots() AS s;
 
 CREATE VIEW pg_stat_slru AS
     SELECT
@@ -879,7 +894,7 @@ CREATE VIEW pg_replication_slots AS
             L.restart_lsn,
             L.confirmed_flush_lsn,
             L.wal_status,
-            L.min_safe_lsn
+            L.safe_wal_size
     FROM pg_get_replication_slots() AS L
             LEFT JOIN pg_database D ON (L.datoid = D.oid);
 
@@ -909,6 +924,13 @@ CREATE VIEW pg_stat_database AS
             pg_stat_get_db_checksum_last_failure(D.oid) AS checksum_last_failure,
             pg_stat_get_db_blk_read_time(D.oid) AS blk_read_time,
             pg_stat_get_db_blk_write_time(D.oid) AS blk_write_time,
+            pg_stat_get_db_session_time(D.oid) AS session_time,
+            pg_stat_get_db_active_time(D.oid) AS active_time,
+            pg_stat_get_db_idle_in_transaction_time(D.oid) AS idle_in_transaction_time,
+            pg_stat_get_db_sessions(D.oid) AS sessions,
+            pg_stat_get_db_sessions_abandoned(D.oid) AS sessions_abandoned,
+            pg_stat_get_db_sessions_fatal(D.oid) AS sessions_fatal,
+            pg_stat_get_db_sessions_killed(D.oid) AS sessions_killed,
             pg_stat_get_db_stat_reset_time(D.oid) AS stats_reset
     FROM (
         SELECT 0 AS oid, NULL::name AS datname
@@ -975,6 +997,15 @@ CREATE VIEW pg_stat_bgwriter AS
         pg_stat_get_buf_fsync_backend() AS buffers_backend_fsync,
         pg_stat_get_buf_alloc() AS buffers_alloc,
         pg_stat_get_bgwriter_stat_reset_time() AS stats_reset;
+
+CREATE VIEW pg_stat_wal AS
+    SELECT
+        w.wal_records,
+        w.wal_fpi,
+        w.wal_bytes,
+        w.wal_buffers_full,
+        w.stats_reset
+    FROM pg_stat_get_wal() w;
 
 CREATE VIEW pg_stat_progress_analyze AS
     SELECT
@@ -1087,11 +1118,22 @@ CREATE VIEW pg_stat_progress_basebackup AS
                       WHEN 4 THEN 'waiting for wal archiving to finish'
                       WHEN 5 THEN 'transferring wal files'
                       END AS phase,
-	CASE S.param2 WHEN -1 THEN NULL ELSE S.param2 END AS backup_total,
-	S.param3 AS backup_streamed,
-	S.param4 AS tablespaces_total,
-	S.param5 AS tablespaces_streamed
+        CASE S.param2 WHEN -1 THEN NULL ELSE S.param2 END AS backup_total,
+        S.param3 AS backup_streamed,
+        S.param4 AS tablespaces_total,
+        S.param5 AS tablespaces_streamed
     FROM pg_stat_get_progress_info('BASEBACKUP') AS S;
+
+
+CREATE VIEW pg_stat_progress_copy AS
+    SELECT
+        S.pid AS pid, S.datid AS datid, D.datname AS datname,
+        S.relid AS relid,
+        S.param1 AS bytes_processed,
+        S.param2 AS bytes_total,
+        S.param3 AS lines_processed
+    FROM pg_stat_get_progress_info('COPY') AS S
+        LEFT JOIN pg_database D ON S.datid = D.oid;
 
 CREATE VIEW pg_user_mappings AS
     SELECT
@@ -1151,7 +1193,7 @@ REVOKE ALL ON pg_replication_origin_status FROM public;
 
 -- All columns of pg_subscription except subconninfo are readable.
 REVOKE ALL ON pg_subscription FROM public;
-GRANT SELECT (subdbid, subname, subowner, subenabled, subslotname, subpublications)
+GRANT SELECT (subdbid, subname, subowner, subenabled, subbinary, substream, subslotname, subpublications)
     ON pg_subscription TO public;
 
 
@@ -1470,6 +1512,7 @@ REVOKE EXECUTE ON FUNCTION pg_stat_reset_shared(text) FROM public;
 REVOKE EXECUTE ON FUNCTION pg_stat_reset_slru(text) FROM public;
 REVOKE EXECUTE ON FUNCTION pg_stat_reset_single_table_counters(oid) FROM public;
 REVOKE EXECUTE ON FUNCTION pg_stat_reset_single_function_counters(oid) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_stat_reset_replication_slot(text) FROM public;
 
 REVOKE EXECUTE ON FUNCTION lo_import(text) FROM public;
 REVOKE EXECUTE ON FUNCTION lo_import(text, oid) FROM public;
@@ -1488,6 +1531,19 @@ REVOKE EXECUTE ON FUNCTION pg_read_file(text,bigint,bigint,boolean) FROM public;
 REVOKE EXECUTE ON FUNCTION pg_read_binary_file(text) FROM public;
 REVOKE EXECUTE ON FUNCTION pg_read_binary_file(text,bigint,bigint) FROM public;
 REVOKE EXECUTE ON FUNCTION pg_read_binary_file(text,bigint,bigint,boolean) FROM public;
+
+REVOKE EXECUTE ON FUNCTION pg_replication_origin_advance(text, pg_lsn) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_replication_origin_create(text) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_replication_origin_drop(text) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_replication_origin_oid(text) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_replication_origin_progress(text, boolean) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_replication_origin_session_is_setup() FROM public;
+REVOKE EXECUTE ON FUNCTION pg_replication_origin_session_progress(boolean) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_replication_origin_session_reset() FROM public;
+REVOKE EXECUTE ON FUNCTION pg_replication_origin_session_setup(text) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_replication_origin_xact_reset() FROM public;
+REVOKE EXECUTE ON FUNCTION pg_replication_origin_xact_setup(pg_lsn, timestamp with time zone) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_show_replication_origin_status() FROM public;
 
 REVOKE EXECUTE ON FUNCTION pg_stat_file(text) FROM public;
 REVOKE EXECUTE ON FUNCTION pg_stat_file(text,boolean) FROM public;

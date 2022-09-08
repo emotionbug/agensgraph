@@ -8,7 +8,7 @@
  *	  This file contains only the public interface routines.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -141,6 +141,7 @@ bthandler(PG_FUNCTION_ARGS)
 	amroutine->amproperty = btproperty;
 	amroutine->ambuildphasename = btbuildphasename;
 	amroutine->amvalidate = btvalidate;
+	amroutine->amadjustmembers = btadjustmembers;
 	amroutine->ambeginscan = btbeginscan;
 	amroutine->amrescan = btrescan;
 	amroutine->amgettuple = btgettuple;
@@ -198,6 +199,7 @@ bool
 btinsert(Relation rel, Datum *values, bool *isnull,
 		 ItemPointer ht_ctid, Relation heapRel,
 		 IndexUniqueCheck checkUnique,
+		 bool indexUnchanged,
 		 IndexInfo *indexInfo)
 {
 	bool		result;
@@ -207,7 +209,7 @@ btinsert(Relation rel, Datum *values, bool *isnull,
 	itup = index_form_tuple(RelationGetDescr(rel), values, isnull);
 	itup->t_tid = *ht_ctid;
 
-	result = _bt_doinsert(rel, itup, checkUnique, heapRel);
+	result = _bt_doinsert(rel, itup, checkUnique, indexUnchanged, heapRel);
 
 	pfree(itup);
 
@@ -439,8 +441,7 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	}
 
 	/*
-	 * Reset the scan keys. Note that keys ordering stuff moved to _bt_first.
-	 * - vadim 05/05/97
+	 * Reset the scan keys
 	 */
 	if (scankey && scan->numberOfKeys > 0)
 		memmove(scan->keyData,
@@ -807,6 +808,12 @@ _bt_vacuum_needs_cleanup(IndexVacuumInfo *info)
 	metapg = BufferGetPage(metabuf);
 	metad = BTPageGetMeta(metapg);
 
+	/*
+	 * XXX: If IndexVacuumInfo contained the heap relation, we could be more
+	 * aggressive about vacuuming non catalog relations by passing the table
+	 * to GlobalVisCheckRemovableXid().
+	 */
+
 	if (metad->btm_version < BTREE_NOVAC_VERSION)
 	{
 		/*
@@ -816,13 +823,12 @@ _bt_vacuum_needs_cleanup(IndexVacuumInfo *info)
 		result = true;
 	}
 	else if (TransactionIdIsValid(metad->btm_oldest_btpo_xact) &&
-			 TransactionIdPrecedes(metad->btm_oldest_btpo_xact,
-								   RecentGlobalXmin))
+			 GlobalVisCheckRemovableXid(NULL, metad->btm_oldest_btpo_xact))
 	{
 		/*
 		 * If any oldest btpo.xact from a previously deleted page in the index
-		 * is older than RecentGlobalXmin, then at least one deleted page can
-		 * be recycled -- don't skip cleanup.
+		 * is visible to everyone, then at least one deleted page can be
+		 * recycled -- don't skip cleanup.
 		 */
 		result = true;
 	}
@@ -847,6 +853,7 @@ _bt_vacuum_needs_cleanup(IndexVacuumInfo *info)
 		prev_num_heap_tuples = metad->btm_last_cleanup_num_heap_tuples;
 
 		if (cleanup_scale_factor <= 0 ||
+			info->num_heap_tuples < 0 ||
 			prev_num_heap_tuples <= 0 ||
 			(info->num_heap_tuples - prev_num_heap_tuples) /
 			prev_num_heap_tuples >= cleanup_scale_factor)
@@ -926,6 +933,12 @@ btvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	 * double-counting some index tuples, so disbelieve any total that exceeds
 	 * the underlying heap's count ... if we know that accurately.  Otherwise
 	 * this might just make matters worse.
+	 *
+	 * Posting list tuples are another source of inaccuracy.  Cleanup-only
+	 * btvacuumscan calls assume that the number of index tuples can be used
+	 * as num_index_tuples, even though num_index_tuples is supposed to
+	 * represent the number of TIDs in the index.  This naive approach can
+	 * underestimate the number of tuples in the index.
 	 */
 	if (!info->estimated_count)
 	{
@@ -1115,7 +1128,7 @@ backtrack:
 	 */
 	buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL,
 							 info->strategy);
-	LockBuffer(buf, BT_READ);
+	_bt_lockbuf(rel, buf, BT_READ);
 	page = BufferGetPage(buf);
 	opaque = NULL;
 	if (!PageIsNew(page))
@@ -1222,8 +1235,7 @@ backtrack:
 		 * course of the vacuum scan, whether or not it actually contains any
 		 * deletable tuples --- see nbtree/README.
 		 */
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-		LockBufferForCleanup(buf);
+		_bt_upgradelockbufcleanup(rel, buf);
 
 		/*
 		 * Check whether we need to backtrack to earlier pages.  What we are
@@ -1270,20 +1282,19 @@ backtrack:
 				 * as long as the callback function only considers whether the
 				 * index tuple refers to pre-cutoff heap tuples that were
 				 * certainly already pruned away during VACUUM's initial heap
-				 * scan by the time we get here. (XLOG_HEAP2_CLEANUP_INFO
-				 * records produce conflicts using a latestRemovedXid value
-				 * for the entire VACUUM, so there is no need to produce our
-				 * own conflict now.)
+				 * scan by the time we get here. (heapam's XLOG_HEAP2_CLEAN
+				 * and XLOG_HEAP2_CLEANUP_INFO records produce conflicts using
+				 * a latestRemovedXid value for the pointed-to heap tuples, so
+				 * there is no need to produce our own conflict now.)
 				 *
 				 * Backends with snapshots acquired after a VACUUM starts but
-				 * before it finishes could have a RecentGlobalXmin with a
-				 * later xid than the VACUUM's OldestXmin cutoff.  These
-				 * backends might happen to opportunistically mark some index
-				 * tuples LP_DEAD before we reach them, even though they may
-				 * be after our cutoff.  We don't try to kill these "extra"
-				 * index tuples in _bt_delitems_vacuum().  This keep things
-				 * simple, and allows us to always avoid generating our own
-				 * conflicts.
+				 * before it finishes could have visibility cutoff with a
+				 * later xid than VACUUM's OldestXmin cutoff.  These backends
+				 * might happen to opportunistically mark some index tuples
+				 * LP_DEAD before we reach them, even though they may be after
+				 * our cutoff.  We don't try to kill these "extra" index
+				 * tuples in _bt_delitems_vacuum().  This keep things simple,
+				 * and allows us to always avoid generating our own conflicts.
 				 */
 				Assert(!BTreeTupleIsPivot(itup));
 				if (!BTreeTupleIsPosting(itup))
@@ -1389,11 +1400,18 @@ backtrack:
 		 * separate live tuples).  We don't delete when backtracking, though,
 		 * since that would require teaching _bt_pagedel() about backtracking
 		 * (doesn't seem worth adding more complexity to deal with that).
+		 *
+		 * We don't count the number of live TIDs during cleanup-only calls to
+		 * btvacuumscan (i.e. when callback is not set).  We count the number
+		 * of index tuples directly instead.  This avoids the expense of
+		 * directly examining all of the tuples on each page.
 		 */
 		if (minoff > maxoff)
 			attempt_pagedel = (blkno == scanblkno);
-		else
+		else if (callback)
 			stats->num_index_tuples += nhtidslive;
+		else
+			stats->num_index_tuples += maxoff - minoff + 1;
 
 		Assert(!attempt_pagedel || nhtidslive == 0);
 	}

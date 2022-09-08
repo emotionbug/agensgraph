@@ -43,6 +43,15 @@ CATALOG(ag_label,7045,LabelRelationId) BKI_SCHEMA_MACRO
  */
 typedef FormData_ag_label *Form_ag_label;
 
+DECLARE_UNIQUE_INDEX(ag_label_oid_index, 7046, on ag_label using btree(oid oid_ops));
+#define LabelOidIndexId 7046
+DECLARE_UNIQUE_INDEX(ag_label_labname_graph_index, 7047, on ag_label using btree(labname name_ops, graphid oid_ops));
+#define LabelNameGraphIndexId 7047
+DECLARE_UNIQUE_INDEX(ag_label_graph_labid_index, 7048, on ag_label using btree(graphid oid_ops, labid int4_ops));
+#define LabelGraphLabelIndexId 7048
+DECLARE_UNIQUE_INDEX(ag_label_relid_index, 7049, on ag_label using btree(relid oid_ops));
+#define LabelRelidIndexId 7049
+
 #define LABEL_KIND_VERTEX	'v'
 #define LABEL_KIND_EDGE		'e'
 

@@ -5,7 +5,7 @@
  *	  commands.  At one time acted as an interface between the Lisp and C
  *	  systems.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -22,6 +22,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
+#include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/toasting.h"
@@ -828,7 +829,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 			break;
 
 		case T_ClusterStmt:
-			cluster((ClusterStmt *) parsetree, isTopLevel);
+			cluster(pstate, (ClusterStmt *) parsetree, isTopLevel);
 			break;
 
 		case T_VacuumStmt:
@@ -926,49 +927,7 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 			break;
 
 		case T_ReindexStmt:
-			{
-				ReindexStmt *stmt = (ReindexStmt *) parsetree;
-
-				if (stmt->concurrent)
-					PreventInTransactionBlock(isTopLevel,
-											  "REINDEX CONCURRENTLY");
-
-				switch (stmt->kind)
-				{
-					case REINDEX_OBJECT_INDEX:
-						ReindexIndex(stmt->relation, stmt->options, stmt->concurrent);
-						break;
-					case REINDEX_OBJECT_TABLE:
-						ReindexTable(stmt->relation, stmt->options, stmt->concurrent);
-						break;
-					case REINDEX_OBJECT_SCHEMA:
-					case REINDEX_OBJECT_SYSTEM:
-					case REINDEX_OBJECT_DATABASE:
-
-						/*
-						 * This cannot run inside a user transaction block; if
-						 * we were inside a transaction, then its commit- and
-						 * start-transaction-command calls would not have the
-						 * intended effect!
-						 */
-						PreventInTransactionBlock(isTopLevel,
-												  (stmt->kind == REINDEX_OBJECT_SCHEMA) ? "REINDEX SCHEMA" :
-												  (stmt->kind == REINDEX_OBJECT_SYSTEM) ? "REINDEX SYSTEM" :
-												  "REINDEX DATABASE");
-						ReindexMultipleTables(stmt->name, stmt->kind, stmt->options, stmt->concurrent);
-						break;
-					case REINDEX_OBJECT_VLABEL:
-						ReindexLabel(stmt->relation, stmt->options, OBJECT_VLABEL);
-						break;
-					case REINDEX_OBJECT_ELABEL:
-						ReindexLabel(stmt->relation, stmt->options, OBJECT_ELABEL);
-						break;
-					default:
-						elog(ERROR, "unrecognized object type: %d",
-							 (int) stmt->kind);
-						break;
-				}
-			}
+			ExecReindex(pstate, (ReindexStmt *) parsetree, isTopLevel);
 			break;
 
 			/*
@@ -1159,26 +1118,36 @@ ProcessUtilitySlow(ParseState *pstate,
 			case T_CreateForeignTableStmt:
 				{
 					List	   *stmts;
-					ListCell   *l;
+					RangeVar   *table_rv = NULL;
 
 					/* Run parse analysis ... */
 					stmts = transformCreateStmt((CreateStmt *) parsetree,
 												queryString);
 
-					/* ... and do it */
-					foreach(l, stmts)
+					/*
+					 * ... and do it.  We can't use foreach() because we may
+					 * modify the list midway through, so pick off the
+					 * elements one at a time, the hard way.
+					 */
+					while (stmts != NIL)
 					{
-						Node	   *stmt = (Node *) lfirst(l);
+						Node	   *stmt = (Node *) linitial(stmts);
+
+						stmts = list_delete_first(stmts);
 
 						if (IsA(stmt, CreateStmt))
 						{
+							CreateStmt *cstmt = (CreateStmt *) stmt;
 							Datum		toast_options;
 							static char *validnsps[] = HEAP_RELOPT_NAMESPACES;
 
-							CheckInheritLabel((CreateStmt *) stmt);
+							/* Remember transformed RangeVar for LIKE */
+							table_rv = cstmt->relation;
+
+							CheckInheritLabel(cstmt);
 
 							/* Create the table itself */
-							address = DefineRelation((CreateStmt *) stmt,
+							address = DefineRelation(cstmt,
 													 RELKIND_RELATION,
 													 InvalidOid, NULL,
 													 queryString);
@@ -1197,7 +1166,7 @@ ProcessUtilitySlow(ParseState *pstate,
 							 * table
 							 */
 							toast_options = transformRelOptions((Datum) 0,
-																((CreateStmt *) stmt)->options,
+																cstmt->options,
 																"toast",
 																validnsps,
 																true,
@@ -1211,16 +1180,37 @@ ProcessUtilitySlow(ParseState *pstate,
 						}
 						else if (IsA(stmt, CreateForeignTableStmt))
 						{
+							CreateForeignTableStmt *cstmt = (CreateForeignTableStmt *) stmt;
+
+							/* Remember transformed RangeVar for LIKE */
+							table_rv = cstmt->base.relation;
+
 							/* Create the table itself */
-							address = DefineRelation((CreateStmt *) stmt,
+							address = DefineRelation(&cstmt->base,
 													 RELKIND_FOREIGN_TABLE,
 													 InvalidOid, NULL,
 													 queryString);
-							CreateForeignTable((CreateForeignTableStmt *) stmt,
+							CreateForeignTable(cstmt,
 											   address.objectId);
 							EventTriggerCollectSimpleCommand(address,
 															 secondaryObject,
 															 stmt);
+						}
+						else if (IsA(stmt, TableLikeClause))
+						{
+							/*
+							 * Do delayed processing of LIKE options.  This
+							 * will result in additional sub-statements for us
+							 * to process.  Those should get done before any
+							 * remaining actions, so prepend them to "stmts".
+							 */
+							TableLikeClause *like = (TableLikeClause *) stmt;
+							List	   *morestmts;
+
+							Assert(table_rv != NULL);
+
+							morestmts = expandTableLikeClause(table_rv, like);
+							stmts = list_concat(morestmts, stmts);
 						}
 						else
 						{
@@ -1248,7 +1238,7 @@ ProcessUtilitySlow(ParseState *pstate,
 						}
 
 						/* Need CCI between commands */
-						if (lnext(stmts, l) != NULL)
+						if (stmts != NIL)
 							CommandCounterIncrement();
 					}
 
@@ -1439,6 +1429,7 @@ ProcessUtilitySlow(ParseState *pstate,
 					IndexStmt  *stmt = (IndexStmt *) parsetree;
 					Oid			relid;
 					LOCKMODE	lockmode;
+					bool		is_alter_table;
 
 					if (stmt->concurrent)
 						PreventInTransactionBlock(isTopLevel,
@@ -1500,6 +1491,17 @@ ProcessUtilitySlow(ParseState *pstate,
 						list_free(inheritors);
 					}
 
+					/*
+					 * If the IndexStmt is already transformed, it must have
+					 * come from generateClonedIndexStmt, which in current
+					 * usage means it came from expandTableLikeClause rather
+					 * than from original parse analysis.  And that means we
+					 * must treat it like ALTER TABLE ADD INDEX, not CREATE.
+					 * (This is a bit grotty, but currently it doesn't seem
+					 * worth adding a separate bool field for the purpose.)
+					 */
+					is_alter_table = stmt->transformed;
+
 					/* Run parse analysis ... */
 					stmt = transformIndexStmt(relid, stmt, queryString);
 
@@ -1511,7 +1513,7 @@ ProcessUtilitySlow(ParseState *pstate,
 									InvalidOid, /* no predefined OID */
 									InvalidOid, /* no parent index */
 									InvalidOid, /* no parent constraint */
-									false,	/* is_alter_table */
+									is_alter_table,
 									true,	/* check_rights */
 									true,	/* check_not_in_use */
 									false,	/* skip_build */
@@ -1925,10 +1927,6 @@ ProcessUtilitySlow(ParseState *pstate,
 
 			case T_AlterStatsStmt:
 				address = AlterStatistics((AlterStatsStmt *) parsetree);
-				break;
-
-			case T_AlterCollationStmt:
-				address = AlterCollation((AlterCollationStmt *) parsetree);
 				break;
 
 			default:
@@ -2437,6 +2435,10 @@ CreateCommandTag(Node *parsetree)
 			tag = CMDTAG_SELECT;
 			break;
 
+		case T_PLAssignStmt:
+			tag = CMDTAG_SELECT;
+			break;
+
 		case T_CypherStmt:
 			tag = CMDTAG_CYPHER;
 			break;
@@ -2560,7 +2562,7 @@ CreateCommandTag(Node *parsetree)
 
 		case T_AlterLabelStmt:
 			{
-				switch (((AlterLabelStmt*) parsetree)->relkind)
+				switch (((AlterLabelStmt*) parsetree)->objtype)
 				{
 					case OBJECT_VLABEL:
 						tag = CMDTAG_ALTER_VLABEL;
@@ -2808,7 +2810,7 @@ CreateCommandTag(Node *parsetree)
 			break;
 
 		case T_AlterTableStmt:
-			tag = AlterObjectTypeCommandTag(((AlterTableStmt *) parsetree)->relkind);
+			tag = AlterObjectTypeCommandTag(((AlterTableStmt *) parsetree)->objtype);
 			break;
 
 		case T_AlterDomainStmt:
@@ -2986,7 +2988,7 @@ CreateCommandTag(Node *parsetree)
 			break;
 
 		case T_CreateTableAsStmt:
-			switch (((CreateTableAsStmt *) parsetree)->relkind)
+			switch (((CreateTableAsStmt *) parsetree)->objtype)
 			{
 				case OBJECT_TABLE:
 					if (((CreateTableAsStmt *) parsetree)->is_select_into)
@@ -3180,10 +3182,6 @@ CreateCommandTag(Node *parsetree)
 			tag = CMDTAG_DROP_SUBSCRIPTION;
 			break;
 
-		case T_AlterCollationStmt:
-			tag = CMDTAG_ALTER_COLLATION;
-			break;
-
 		case T_PrepareStmt:
 			tag = CMDTAG_PREPARE;
 			break;
@@ -3375,6 +3373,10 @@ GetCommandLogLevel(Node *parsetree)
 				lev = LOGSTMT_DDL;	/* SELECT INTO */
 			else
 				lev = LOGSTMT_ALL;
+			break;
+
+		case T_PLAssignStmt:
+			lev = LOGSTMT_ALL;
 			break;
 
 		case T_CypherStmt:
@@ -3809,10 +3811,6 @@ GetCommandLogLevel(Node *parsetree)
 			break;
 
 		case T_AlterStatsStmt:
-			lev = LOGSTMT_DDL;
-			break;
-
-		case T_AlterCollationStmt:
 			lev = LOGSTMT_DDL;
 			break;
 

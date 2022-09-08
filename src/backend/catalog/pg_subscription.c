@@ -3,7 +3,7 @@
  * pg_subscription.c
  *		replication subscriptions
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -65,6 +65,8 @@ GetSubscription(Oid subid, bool missing_ok)
 	sub->name = pstrdup(NameStr(subform->subname));
 	sub->owner = subform->subowner;
 	sub->enabled = subform->subenabled;
+	sub->binary = subform->subbinary;
+	sub->stream = subform->substream;
 
 	/* Get conninfo */
 	datum = SysCacheGetAttr(SUBSCRIPTIONOID,
@@ -326,19 +328,15 @@ UpdateSubscriptionRelState(Oid subid, Oid relid, char state,
 /*
  * Get state of subscription table.
  *
- * Returns SUBREL_STATE_UNKNOWN when not found and missing_ok is true.
+ * Returns SUBREL_STATE_UNKNOWN when the table is not in the subscription.
  */
 char
-GetSubscriptionRelState(Oid subid, Oid relid, XLogRecPtr *sublsn,
-						bool missing_ok)
+GetSubscriptionRelState(Oid subid, Oid relid, XLogRecPtr *sublsn)
 {
-	Relation	rel;
 	HeapTuple	tup;
 	char		substate;
 	bool		isnull;
 	Datum		d;
-
-	rel = table_open(SubscriptionRelRelationId, AccessShareLock);
 
 	/* Try finding the mapping. */
 	tup = SearchSysCache2(SUBSCRIPTIONRELMAP,
@@ -347,22 +345,14 @@ GetSubscriptionRelState(Oid subid, Oid relid, XLogRecPtr *sublsn,
 
 	if (!HeapTupleIsValid(tup))
 	{
-		if (missing_ok)
-		{
-			table_close(rel, AccessShareLock);
-			*sublsn = InvalidXLogRecPtr;
-			return SUBREL_STATE_UNKNOWN;
-		}
-
-		elog(ERROR, "subscription table %u in subscription %u does not exist",
-			 relid, subid);
+		*sublsn = InvalidXLogRecPtr;
+		return SUBREL_STATE_UNKNOWN;
 	}
 
 	/* Get the state. */
-	d = SysCacheGetAttr(SUBSCRIPTIONRELMAP, tup,
-						Anum_pg_subscription_rel_srsubstate, &isnull);
-	Assert(!isnull);
-	substate = DatumGetChar(d);
+	substate = ((Form_pg_subscription_rel) GETSTRUCT(tup))->srsubstate;
+
+	/* Get the LSN */
 	d = SysCacheGetAttr(SUBSCRIPTIONRELMAP, tup,
 						Anum_pg_subscription_rel_srsublsn, &isnull);
 	if (isnull)
@@ -372,7 +362,6 @@ GetSubscriptionRelState(Oid subid, Oid relid, XLogRecPtr *sublsn,
 
 	/* Cleanup */
 	ReleaseSysCache(tup);
-	table_close(rel, AccessShareLock);
 
 	return substate;
 }
@@ -451,13 +440,20 @@ GetSubscriptionRelations(Oid subid)
 	{
 		Form_pg_subscription_rel subrel;
 		SubscriptionRelState *relstate;
+		Datum		d;
+		bool		isnull;
 
 		subrel = (Form_pg_subscription_rel) GETSTRUCT(tup);
 
 		relstate = (SubscriptionRelState *) palloc(sizeof(SubscriptionRelState));
 		relstate->relid = subrel->srrelid;
 		relstate->state = subrel->srsubstate;
-		relstate->lsn = subrel->srsublsn;
+		d = SysCacheGetAttr(SUBSCRIPTIONRELMAP, tup,
+							Anum_pg_subscription_rel_srsublsn, &isnull);
+		if (isnull)
+			relstate->lsn = InvalidXLogRecPtr;
+		else
+			relstate->lsn = DatumGetLSN(d);
 
 		res = lappend(res, relstate);
 	}
@@ -503,13 +499,20 @@ GetSubscriptionNotReadyRelations(Oid subid)
 	{
 		Form_pg_subscription_rel subrel;
 		SubscriptionRelState *relstate;
+		Datum		d;
+		bool		isnull;
 
 		subrel = (Form_pg_subscription_rel) GETSTRUCT(tup);
 
 		relstate = (SubscriptionRelState *) palloc(sizeof(SubscriptionRelState));
 		relstate->relid = subrel->srrelid;
 		relstate->state = subrel->srsubstate;
-		relstate->lsn = subrel->srsublsn;
+		d = SysCacheGetAttr(SUBSCRIPTIONRELMAP, tup,
+							Anum_pg_subscription_rel_srsublsn, &isnull);
+		if (isnull)
+			relstate->lsn = InvalidXLogRecPtr;
+		else
+			relstate->lsn = DatumGetLSN(d);
 
 		res = lappend(res, relstate);
 	}

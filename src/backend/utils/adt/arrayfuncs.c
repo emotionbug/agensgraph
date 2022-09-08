@@ -3,7 +3,7 @@
  * arrayfuncs.c
  *	  Support functions for arrays.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1308,13 +1308,34 @@ array_recv(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
 				 errmsg("invalid array flags")));
 
+	/* Check element type recorded in the data */
 	element_type = pq_getmsgint(buf, sizeof(Oid));
+
+	/*
+	 * From a security standpoint, it doesn't matter whether the input's
+	 * element type matches what we expect: the element type's receive
+	 * function has to be robust enough to cope with invalid data.  However,
+	 * from a user-friendliness standpoint, it's nicer to complain about type
+	 * mismatches than to throw "improper binary format" errors.  But there's
+	 * a problem: only built-in types have OIDs that are stable enough to
+	 * believe that a mismatch is a real issue.  So complain only if both OIDs
+	 * are in the built-in range.  Otherwise, carry on with the element type
+	 * we "should" be getting.
+	 */
 	if (element_type != spec_element_type)
 	{
-		/* XXX Can we allow taking the input element type in any cases? */
-		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
-				 errmsg("wrong element type")));
+		if (element_type < FirstGenbkiObjectId &&
+			spec_element_type < FirstGenbkiObjectId)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("binary data has array element type %u (%s) instead of expected %u (%s)",
+							element_type,
+							format_type_extended(element_type, -1,
+												 FORMAT_TYPE_ALLOW_INVALID),
+							spec_element_type,
+							format_type_extended(spec_element_type, -1,
+												 FORMAT_TYPE_ALLOW_INVALID))));
+		element_type = spec_element_type;
 	}
 
 	for (i = 0; i < ndim; i++)
@@ -2023,7 +2044,8 @@ array_get_element_expanded(Datum arraydatum,
  * array bound.
  *
  * NOTE: we assume it is OK to scribble on the provided subscript arrays
- * lowerIndx[] and upperIndx[].  These are generally just temporaries.
+ * lowerIndx[] and upperIndx[]; also, these arrays must be of size MAXDIM
+ * even when nSubscripts is less.  These are generally just temporaries.
  */
 Datum
 array_get_slice(Datum arraydatum,
@@ -2560,8 +2582,11 @@ array_set_element_expanded(Datum arraydatum,
 
 	/*
 	 * Copy new element into array's context, if needed (we assume it's
-	 * already detoasted, so no junk should be created).  If we fail further
-	 * down, this memory is leaked, but that's reasonably harmless.
+	 * already detoasted, so no junk should be created).  Doing this before
+	 * we've made any significant changes ensures that our behavior is sane
+	 * even when the source is a reference to some element of this same array.
+	 * If we fail further down, this memory is leaked, but that's reasonably
+	 * harmless.
 	 */
 	if (!eah->typbyval && !isNull)
 	{
@@ -2751,7 +2776,8 @@ array_set_element_expanded(Datum arraydatum,
  * (XXX TODO: allow a corresponding behavior for multidimensional arrays)
  *
  * NOTE: we assume it is OK to scribble on the provided index arrays
- * lowerIndx[] and upperIndx[].  These are generally just temporaries.
+ * lowerIndx[] and upperIndx[]; also, these arrays must be of size MAXDIM
+ * even when nSubscripts is less.  These are generally just temporaries.
  *
  * NOTE: For assignments, we throw an error for silly subscripts etc,
  * rather than returning a NULL or empty array as the fetch operations do.
@@ -4050,7 +4076,7 @@ hash_array_extended(PG_FUNCTION_ARGS)
 	typalign = typentry->typalign;
 
 	InitFunctionCallInfoData(*locfcinfo, &typentry->hash_extended_proc_finfo, 2,
-							 InvalidOid, NULL, NULL);
+							 PG_GET_COLLATION(), NULL, NULL);
 
 	/* Loop over source data */
 	nitems = ArrayGetNItems(ndims, dims);

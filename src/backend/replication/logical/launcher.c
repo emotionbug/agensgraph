@@ -2,7 +2,7 @@
  * launcher.c
  *	   PostgreSQL logical replication worker launcher process
  *
- * Copyright (c) 2016-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/launcher.c
@@ -122,6 +122,10 @@ get_subscription_list(void)
 	 * the secondary effect that it sets RecentGlobalXmin.  (This is critical
 	 * for anything that reads heap pages, because HOT may decide to prune
 	 * them even if the process doesn't attempt to modify any tuples.)
+	 *
+	 * FIXME: This comment is inaccurate / the code buggy. A snapshot that is
+	 * not pushed/active does not reliably prevent HOT pruning (->xmin could
+	 * e.g. be cleared when cache invalidations are processed).
 	 */
 	StartTransactionCommand();
 	(void) GetTransactionSnapshot();
@@ -956,7 +960,7 @@ ApplyLauncherMain(Datum main_arg)
 	LogicalRepCtx->launcher_pid = MyProcPid;
 
 	/* Establish signal handlers. */
-	pqsignal(SIGTERM, SignalHandlerForConfigReload);
+	pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 

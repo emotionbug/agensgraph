@@ -4,7 +4,7 @@
  *	  header file for postgres btree access method implementation.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/nbtree.h
@@ -17,6 +17,7 @@
 #include "access/amapi.h"
 #include "access/itup.h"
 #include "access/sdir.h"
+#include "access/tableam.h"
 #include "access/xlogreader.h"
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_index.h"
@@ -75,7 +76,7 @@ typedef BTPageOpaqueData *BTPageOpaque;
 #define BTP_META		(1 << 3)	/* meta-page */
 #define BTP_HALF_DEAD	(1 << 4)	/* empty, but still in tree */
 #define BTP_SPLIT_END	(1 << 5)	/* rightmost page of split group */
-#define BTP_HAS_GARBAGE (1 << 6)	/* page has LP_DEAD tuples */
+#define BTP_HAS_GARBAGE (1 << 6)	/* page has LP_DEAD tuples (deprecated) */
 #define BTP_INCOMPLETE_SPLIT (1 << 7)	/* right sibling's downlink is missing */
 
 /*
@@ -168,7 +169,7 @@ typedef struct BTMetaPageData
 /*
  * MaxTIDsPerBTreePage is an upper bound on the number of heap TIDs tuples
  * that may be stored on a btree leaf page.  It is used to size the
- * per-page temporary buffers used by index scans.
+ * per-page temporary buffers.
  *
  * Note: we don't bother considering per-tuple overheads here to keep
  * things simple (value is based on how many elements a single array of
@@ -739,6 +740,7 @@ typedef struct BTDedupStateData
 {
 	/* Deduplication status info for entire pass over page */
 	bool		deduplicate;	/* Still deduplicating page? */
+	int			nmaxitems;		/* Number of max-sized tuples so far */
 	Size		maxpostingsize; /* Limit on size of final tuple */
 
 	/* Metadata about base tuple of current pending posting list */
@@ -758,15 +760,16 @@ typedef struct BTDedupStateData
 	 * will not become posting list tuples do not appear in the array (they
 	 * are implicitly unchanged by deduplication pass).
 	 */
-	int			nintervals;		/* current size of intervals array */
+	int			nintervals;		/* current number of intervals in array */
 	BTDedupInterval intervals[MaxIndexTuplesPerPage];
 } BTDedupStateData;
 
 typedef BTDedupStateData *BTDedupState;
 
 /*
- * BTVacuumPostingData is state that represents how to VACUUM a posting list
- * tuple when some (though not all) of its TIDs are to be deleted.
+ * BTVacuumPostingData is state that represents how to VACUUM (or delete) a
+ * posting list tuple when some (though not all) of its TIDs are to be
+ * deleted.
  *
  * Convention is that itup field is the original posting list tuple on input,
  * and palloc()'d final tuple used to overwrite existing tuple on output.
@@ -995,6 +998,7 @@ extern void btbuildempty(Relation index);
 extern bool btinsert(Relation rel, Datum *values, bool *isnull,
 					 ItemPointer ht_ctid, Relation heapRel,
 					 IndexUniqueCheck checkUnique,
+					 bool indexUnchanged,
 					 struct IndexInfo *indexInfo);
 extern IndexScanDesc btbeginscan(Relation rel, int nkeys, int norderbys);
 extern Size btestimateparallelscan(void);
@@ -1026,9 +1030,11 @@ extern void _bt_parallel_advance_array_keys(IndexScanDesc scan);
 /*
  * prototypes for functions in nbtdedup.c
  */
-extern void _bt_dedup_one_page(Relation rel, Buffer buf, Relation heapRel,
-							   IndexTuple newitem, Size newitemsz,
-							   bool checkingunique);
+extern void _bt_dedup_pass(Relation rel, Buffer buf, Relation heapRel,
+						   IndexTuple newitem, Size newitemsz,
+						   bool checkingunique);
+extern bool _bt_bottomupdel_pass(Relation rel, Buffer buf, Relation heapRel,
+								 Size newitemsz);
 extern void _bt_dedup_start_pending(BTDedupState state, IndexTuple base,
 									OffsetNumber baseoff);
 extern bool _bt_dedup_save_htid(BTDedupState state, IndexTuple itup);
@@ -1043,7 +1049,8 @@ extern IndexTuple _bt_swap_posting(IndexTuple newitem, IndexTuple oposting,
  * prototypes for functions in nbtinsert.c
  */
 extern bool _bt_doinsert(Relation rel, IndexTuple itup,
-						 IndexUniqueCheck checkUnique, Relation heapRel);
+						 IndexUniqueCheck checkUnique, bool indexUnchanged,
+						 Relation heapRel);
 extern void _bt_finish_split(Relation rel, Buffer lbuf, BTStack stack);
 extern Buffer _bt_getstackbuf(Relation rel, BTStack stack, BlockNumber child);
 
@@ -1072,14 +1079,18 @@ extern Buffer _bt_getbuf(Relation rel, BlockNumber blkno, int access);
 extern Buffer _bt_relandgetbuf(Relation rel, Buffer obuf,
 							   BlockNumber blkno, int access);
 extern void _bt_relbuf(Relation rel, Buffer buf);
+extern void _bt_lockbuf(Relation rel, Buffer buf, int access);
+extern void _bt_unlockbuf(Relation rel, Buffer buf);
+extern bool _bt_conditionallockbuf(Relation rel, Buffer buf);
+extern void _bt_upgradelockbufcleanup(Relation rel, Buffer buf);
 extern void _bt_pageinit(Page page, Size size);
 extern bool _bt_page_recyclable(Page page);
 extern void _bt_delitems_vacuum(Relation rel, Buffer buf,
 								OffsetNumber *deletable, int ndeletable,
 								BTVacuumPosting *updatable, int nupdatable);
-extern void _bt_delitems_delete(Relation rel, Buffer buf,
-								OffsetNumber *deletable, int ndeletable,
-								Relation heapRel);
+extern void _bt_delitems_delete_check(Relation rel, Buffer buf,
+									  Relation heapRel,
+									  TM_IndexDeleteOp *delstate);
 extern uint32 _bt_pagedel(Relation rel, Buffer leafbuf,
 						  TransactionId *oldestBtpoXact);
 
@@ -1136,6 +1147,10 @@ extern bool _bt_allequalimage(Relation rel, bool debugmessage);
  * prototypes for functions in nbtvalidate.c
  */
 extern bool btvalidate(Oid opclassoid);
+extern void btadjustmembers(Oid opfamilyoid,
+							Oid opclassoid,
+							List *operators,
+							List *functions);
 
 /*
  * prototypes for functions in nbtsort.c

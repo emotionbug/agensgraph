@@ -2,7 +2,7 @@
  *
  * pg_waldump.c - decode and display WAL
  *
- * Copyright (c) 2013-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_waldump/pg_waldump.c
@@ -611,14 +611,9 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 	double		rec_len_pct,
 				fpi_len_pct;
 
-	/* ---
-	 * Make a first pass to calculate column totals:
-	 * count(*),
-	 * sum(xl_len+SizeOfXLogRecord),
-	 * sum(xl_tot_len-xl_len-SizeOfXLogRecord), and
-	 * sum(xl_tot_len).
-	 * These are used to calculate percentages for each record type.
-	 * ---
+	/*
+	 * Each row shows its percentages of the total, so make a first pass to
+	 * calculate column totals.
 	 */
 
 	for (ri = 0; ri < RM_NEXT_ID; ri++)

@@ -5,7 +5,7 @@
  *
  * Author: Magnus Hagander <magnus@hagander.net>
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/pg_receivewal.c
@@ -269,8 +269,8 @@ FindStreamingStart(uint32 *tli)
 
 			if (statbuf.st_size != WalSegSz)
 			{
-				pg_log_warning("segment file \"%s\" has incorrect size %d, skipping",
-							   dirent->d_name, (int) statbuf.st_size);
+				pg_log_warning("segment file \"%s\" has incorrect size %lld, skipping",
+							   dirent->d_name, (long long int) statbuf.st_size);
 				continue;
 			}
 		}

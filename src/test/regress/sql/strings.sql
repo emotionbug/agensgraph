@@ -131,32 +131,39 @@ SELECT SUBSTRING('1234567890' FROM 3) = '34567890' AS "34567890";
 
 SELECT SUBSTRING('1234567890' FROM 4 FOR 3) = '456' AS "456";
 
+-- test overflow cases
+SELECT SUBSTRING('string' FROM 2 FOR 2147483646) AS "tring";
+SELECT SUBSTRING('string' FROM -10 FOR 2147483646) AS "string";
+SELECT SUBSTRING('string' FROM -10 FOR -2147483646) AS "error";
+
 -- T581 regular expression substring (with SQL's bizarre regexp syntax)
+SELECT SUBSTRING('abcdefg' SIMILAR 'a#"(b_d)#"%' ESCAPE '#') AS "bcd";
+-- obsolete SQL99 syntax
 SELECT SUBSTRING('abcdefg' FROM 'a#"(b_d)#"%' FOR '#') AS "bcd";
 
 -- No match should return NULL
-SELECT SUBSTRING('abcdefg' FROM '#"(b_d)#"%' FOR '#') IS NULL AS "True";
+SELECT SUBSTRING('abcdefg' SIMILAR '#"(b_d)#"%' ESCAPE '#') IS NULL AS "True";
 
 -- Null inputs should return NULL
-SELECT SUBSTRING('abcdefg' FROM '%' FOR NULL) IS NULL AS "True";
-SELECT SUBSTRING(NULL FROM '%' FOR '#') IS NULL AS "True";
-SELECT SUBSTRING('abcdefg' FROM NULL FOR '#') IS NULL AS "True";
+SELECT SUBSTRING('abcdefg' SIMILAR '%' ESCAPE NULL) IS NULL AS "True";
+SELECT SUBSTRING(NULL SIMILAR '%' ESCAPE '#') IS NULL AS "True";
+SELECT SUBSTRING('abcdefg' SIMILAR NULL ESCAPE '#') IS NULL AS "True";
 
 -- The first and last parts should act non-greedy
-SELECT SUBSTRING('abcdefg' FROM 'a#"%#"g' FOR '#') AS "bcdef";
-SELECT SUBSTRING('abcdefg' FROM 'a*#"%#"g*' FOR '#') AS "abcdefg";
+SELECT SUBSTRING('abcdefg' SIMILAR 'a#"%#"g' ESCAPE '#') AS "bcdef";
+SELECT SUBSTRING('abcdefg' SIMILAR 'a*#"%#"g*' ESCAPE '#') AS "abcdefg";
 
 -- Vertical bar in any part affects only that part
-SELECT SUBSTRING('abcdefg' FROM 'a|b#"%#"g' FOR '#') AS "bcdef";
-SELECT SUBSTRING('abcdefg' FROM 'a#"%#"x|g' FOR '#') AS "bcdef";
-SELECT SUBSTRING('abcdefg' FROM 'a#"%|ab#"g' FOR '#') AS "bcdef";
+SELECT SUBSTRING('abcdefg' SIMILAR 'a|b#"%#"g' ESCAPE '#') AS "bcdef";
+SELECT SUBSTRING('abcdefg' SIMILAR 'a#"%#"x|g' ESCAPE '#') AS "bcdef";
+SELECT SUBSTRING('abcdefg' SIMILAR 'a#"%|ab#"g' ESCAPE '#') AS "bcdef";
 
 -- Can't have more than two part separators
-SELECT SUBSTRING('abcdefg' FROM 'a*#"%#"g*#"x' FOR '#') AS "error";
+SELECT SUBSTRING('abcdefg' SIMILAR 'a*#"%#"g*#"x' ESCAPE '#') AS "error";
 
 -- Postgres extension: with 0 or 1 separator, assume parts 1 and 3 are empty
-SELECT SUBSTRING('abcdefg' FROM 'a#"%g' FOR '#') AS "bcdefg";
-SELECT SUBSTRING('abcdefg' FROM 'a%g' FOR '#') AS "abcdefg";
+SELECT SUBSTRING('abcdefg' SIMILAR 'a#"%g' ESCAPE '#') AS "bcdefg";
+SELECT SUBSTRING('abcdefg' SIMILAR 'a%g' ESCAPE '#') AS "abcdefg";
 
 -- substring() with just two arguments is not allowed by SQL spec;
 -- we accept it, but we interpret the pattern as a POSIX regexp not SQL
@@ -531,7 +538,23 @@ SELECT replace('yabadoo', 'bad', '') AS "yaoo";
 --
 -- test split_part
 --
+select split_part('','@',1) AS "empty string";
+
+select split_part('','@',-1) AS "empty string";
+
+select split_part('joeuser@mydatabase','',1) AS "joeuser@mydatabase";
+
+select split_part('joeuser@mydatabase','',2) AS "empty string";
+
+select split_part('joeuser@mydatabase','',-1) AS "joeuser@mydatabase";
+
+select split_part('joeuser@mydatabase','',-2) AS "empty string";
+
 select split_part('joeuser@mydatabase','@',0) AS "an error";
+
+select split_part('joeuser@mydatabase','@@',1) AS "joeuser@mydatabase";
+
+select split_part('joeuser@mydatabase','@@',2) AS "empty string";
 
 select split_part('joeuser@mydatabase','@',1) AS "joeuser";
 
@@ -540,6 +563,14 @@ select split_part('joeuser@mydatabase','@',2) AS "mydatabase";
 select split_part('joeuser@mydatabase','@',3) AS "empty string";
 
 select split_part('@joeuser@mydatabase@','@',2) AS "joeuser";
+
+select split_part('joeuser@mydatabase','@',-1) AS "mydatabase";
+
+select split_part('joeuser@mydatabase','@',-2) AS "joeuser";
+
+select split_part('joeuser@mydatabase','@',-3) AS "empty string";
+
+select split_part('@joeuser@mydatabase@','@',-2) AS "mydatabase";
 
 --
 -- test to_hex
@@ -684,7 +715,15 @@ SELECT chr(0);
 SELECT repeat('Pg', 4);
 SELECT repeat('Pg', -4);
 
+SELECT SUBSTRING('1234567890'::bytea FROM 3) "34567890";
+SELECT SUBSTRING('1234567890'::bytea FROM 4 FOR 3) AS "456";
+SELECT SUBSTRING('string'::bytea FROM 2 FOR 2147483646) AS "tring";
+SELECT SUBSTRING('string'::bytea FROM -10 FOR 2147483646) AS "string";
+SELECT SUBSTRING('string'::bytea FROM -10 FOR -2147483646) AS "error";
+
 SELECT trim(E'\\000'::bytea from E'\\000Tom\\000'::bytea);
+SELECT trim(leading E'\\000'::bytea from E'\\000Tom\\000'::bytea);
+SELECT trim(trailing E'\\000'::bytea from E'\\000Tom\\000'::bytea);
 SELECT btrim(E'\\000trim\\000'::bytea, E'\\000'::bytea);
 SELECT btrim(''::bytea, E'\\000'::bytea);
 SELECT btrim(E'\\000trim\\000'::bytea, ''::bytea);

@@ -107,7 +107,7 @@
  * is a convenient point to initialize replication from, which is why we
  * export a snapshot at that point, which *can* be used to read normal data.
  *
- * Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/snapbuild.c
@@ -524,6 +524,7 @@ SnapBuildBuildSnapshot(SnapBuild *builder)
 	snapshot->curcid = FirstCommandId;
 	snapshot->active_count = 0;
 	snapshot->regd_count = 0;
+	snapshot->snapXactCompletionCount = 0;
 
 	return snapshot;
 }
@@ -553,8 +554,8 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 		elog(ERROR, "cannot build an initial slot snapshot, not all transactions are monitored anymore");
 
 	/* so we don't overwrite the existing value */
-	if (TransactionIdIsValid(MyPgXact->xmin))
-		elog(ERROR, "cannot build an initial slot snapshot when MyPgXact->xmin already is valid");
+	if (TransactionIdIsValid(MyProc->xmin))
+		elog(ERROR, "cannot build an initial slot snapshot when MyProc->xmin already is valid");
 
 	snap = SnapBuildBuildSnapshot(builder);
 
@@ -575,7 +576,7 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 	}
 #endif
 
-	MyPgXact->xmin = snap->xmin;
+	MyProc->xmin = snap->xmin;
 
 	/* allocate in transaction context */
 	newxip = (TransactionId *)
@@ -831,6 +832,13 @@ SnapBuildDistributeNewCatalogSnapshot(SnapBuild *builder, XLogRecPtr lsn)
 		 * we'll get the change from the subtxn.
 		 */
 		if (!ReorderBufferXidHasBaseSnapshot(builder->reorder, txn->xid))
+			continue;
+
+		/*
+		 * We don't need to add snapshot to prepared transactions as they
+		 * should not see the new catalog contents.
+		 */
+		if (rbtxn_prepared(txn) || rbtxn_skip_prepared(txn))
 			continue;
 
 		elog(DEBUG2, "adding a new snapshot to %u at %X/%X",
@@ -1377,7 +1385,7 @@ SnapBuildFindSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts *runn
  * a) allow isolationtester to notice that we're currently waiting for
  *	  something.
  * b) log a new xl_running_xacts record where it'd be helpful, without having
- *	  to write for bgwriter or checkpointer.
+ *	  to wait for bgwriter or checkpointer.
  * ---
  */
 static void
@@ -1406,7 +1414,7 @@ SnapBuildWaitSnapshot(xl_running_xacts *running, TransactionId cutoff)
 	/*
 	 * All transactions we needed to finish finished - try to ensure there is
 	 * another xl_running_xacts record in a timely manner, without having to
-	 * write for bgwriter or checkpointer to log one.  During recovery we
+	 * wait for bgwriter or checkpointer to log one.  During recovery we
 	 * can't enforce that, so we'll have to wait.
 	 */
 	if (!RecoveryInProgress())
@@ -1480,7 +1488,7 @@ static void
 SnapBuildSerialize(SnapBuild *builder, XLogRecPtr lsn)
 {
 	Size		needed_length;
-	SnapBuildOnDisk *ondisk;
+	SnapBuildOnDisk *ondisk = NULL;
 	char	   *ondisk_c;
 	int			fd;
 	char		tmppath[MAXPGPATH];
@@ -1679,6 +1687,9 @@ SnapBuildSerialize(SnapBuild *builder, XLogRecPtr lsn)
 out:
 	ReorderBufferSetRestartPoint(builder->reorder,
 								 builder->last_serialized_snapshot);
+	/* be tidy */
+	if (ondisk)
+		pfree(ondisk);
 }
 
 /*

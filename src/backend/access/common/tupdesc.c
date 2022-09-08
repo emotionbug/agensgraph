@@ -3,7 +3,7 @@
  * tupdesc.c
  *	  POSTGRES tuple descriptor support code
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -786,9 +786,7 @@ TupleDescInitEntryCollation(TupleDesc desc,
  *
  * Given a relation schema (list of ColumnDef nodes), build a TupleDesc.
  *
- * Note: the default assumption is no OIDs; caller may modify the returned
- * TupleDesc if it wants OIDs.  Also, tdtypeid will need to be filled in
- * later on.
+ * Note: tdtypeid will need to be filled in later on.
  */
 TupleDesc
 BuildDescForRelation(List *schema)

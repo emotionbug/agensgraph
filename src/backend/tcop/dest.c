@@ -4,7 +4,7 @@
  *	  support for communication destinations
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -209,6 +209,18 @@ EndCommand(const QueryCompletion *qc, CommandDest dest, bool force_undecorated_o
 		case DestTupleQueue:
 			break;
 	}
+}
+
+/* ----------------
+ *		EndReplicationCommand - stripped down version of EndCommand
+ *
+ *		For use by replication commands.
+ * ----------------
+ */
+void
+EndReplicationCommand(const char *commandTag)
+{
+	pq_putmessage('C', commandTag, strlen(commandTag) + 1);
 }
 
 /* ----------------

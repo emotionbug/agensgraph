@@ -4,7 +4,7 @@
  *	  definitions for executor state nodes
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/execnodes.h
@@ -36,7 +36,6 @@
 #include "utils/tuplestore.h"
 
 struct PlanState;				/* forward references in this file */
-struct PartitionRoutingInfo;
 struct ParallelHashJoinState;
 struct ExecRowMark;
 struct ExprState;
@@ -453,6 +452,12 @@ typedef struct ResultRelInfo
 	/* true when modifying foreign table directly */
 	bool		ri_usesFdwDirectModify;
 
+	/* batch insert stuff */
+	int			ri_NumSlots;		/* number of slots in the array */
+	int			ri_BatchSize;		/* max slots inserted in a single batch */
+	TupleTableSlot **ri_Slots;		/* input tuples for batch insert */
+	TupleTableSlot **ri_PlanSlots;
+
 	/* list of WithCheckOption's to be checked */
 	List	   *ri_WithCheckOptions;
 
@@ -483,19 +488,33 @@ typedef struct ResultRelInfo
 	/* ON CONFLICT evaluation state */
 	OnConflictSetState *ri_onConflict;
 
-	/* partition check expression */
-	List	   *ri_PartitionCheck;
-
-	/* partition check expression state */
+	/* partition check expression state (NULL if not set up yet) */
 	ExprState  *ri_PartitionCheckExpr;
 
-	/* relation descriptor for root partitioned table */
-	Relation	ri_PartitionRoot;
+	/*
+	 * Information needed by tuple routing target relations
+	 *
+	 * RootResultRelInfo gives the target relation mentioned in the query, if
+	 * it's a partitioned table. It is not set if the target relation
+	 * mentioned in the query is an inherited table, nor when tuple routing is
+	 * not needed.
+	 *
+	 * RootToPartitionMap and PartitionTupleSlot, initialized by
+	 * ExecInitRoutingInfo, are non-NULL if partition has a different tuple
+	 * format than the root table.
+	 */
+	struct ResultRelInfo *ri_RootResultRelInfo;
+	TupleConversionMap *ri_RootToPartitionMap;
+	TupleTableSlot *ri_PartitionTupleSlot;
 
-	/* Additional information specific to partition tuple routing */
-	struct PartitionRoutingInfo *ri_PartitionInfo;
+	/*
+	 * Map to convert child result relation tuples to the format of the table
+	 * actually mentioned in the query (called "root").  Set only if
+	 * transition tuple capture or update partition row movement is active.
+	 */
+	TupleConversionMap *ri_ChildToRootMap;
 
-	/* For use by copy.c when performing multi-inserts */
+	/* for use by copyfrom.c when performing multi-inserts */
 	struct CopyMultiInsertBuffer *ri_CopyMultiInsertBuffer;
 } ResultRelInfo;
 
@@ -511,7 +530,7 @@ typedef struct GraphWriteStats
 /* ----------------
  *	  EState information
  *
- * Master working state for an Executor invocation
+ * Working state for an Executor invocation
  * ----------------
  */
 typedef struct EState
@@ -537,23 +556,18 @@ typedef struct EState
 	CommandId	es_output_cid;
 
 	/* Info about target table(s) for insert/update/delete queries: */
-	ResultRelInfo *es_result_relations; /* array of ResultRelInfos */
-	int			es_num_result_relations;	/* length of array */
-	ResultRelInfo *es_result_relation_info; /* currently active array elt */
+	ResultRelInfo **es_result_relations;	/* Array of per-range-table-entry
+											 * ResultRelInfo pointers, or NULL
+											 * if not a target table */
+	List	   *es_opened_result_relations; /* List of non-NULL entries in
+											 * es_result_relations in no
+											 * specific order */
 
-	/*
-	 * Info about the partition root table(s) for insert/update/delete queries
-	 * targeting partitioned tables.  Only leaf partitions are mentioned in
-	 * es_result_relations, but we need access to the roots for firing
-	 * triggers and for runtime tuple routing.
-	 */
-	ResultRelInfo *es_root_result_relations;	/* array of ResultRelInfos */
-	int			es_num_root_result_relations;	/* length of the array */
 	PartitionDirectory es_partition_directory;	/* for PartitionDesc lookup */
 
 	/*
 	 * The following list contains ResultRelInfos created by the tuple routing
-	 * code for partitions that don't already have one.
+	 * code for partitions that aren't found in the es_result_relations array.
 	 */
 	List	   *es_tuple_routing_result_relations;
 
@@ -758,17 +772,6 @@ typedef tuplehash_iterator TupleHashIterator;
  */
 
 /* ----------------
- *		AggrefExprState node
- * ----------------
- */
-typedef struct AggrefExprState
-{
-	NodeTag		type;
-	Aggref	   *aggref;			/* expression plan node */
-	int			aggno;			/* ID number for agg within its plan node */
-} AggrefExprState;
-
-/* ----------------
  *		WindowFuncExprState node
  * ----------------
  */
@@ -882,6 +885,8 @@ typedef struct SubPlanState
 	MemoryContext hashtablecxt; /* memory context containing hash tables */
 	MemoryContext hashtempcxt;	/* temp memory context for hash tables */
 	ExprContext *innerecontext; /* econtext for computing inner tuples */
+	int			numCols;		/* number of columns being hashed */
+	/* each of the remaining fields is an array of length numCols: */
 	AttrNumber *keyColIdx;		/* control data for hash tables */
 	Oid		   *tab_eq_funcoids;	/* equality func oids for table
 									 * datatype(s) */
@@ -892,18 +897,6 @@ typedef struct SubPlanState
 	FmgrInfo   *cur_eq_funcs;	/* equality functions for LHS vs. table */
 	ExprState  *cur_eq_comp;	/* equality comparator for LHS vs. table */
 } SubPlanState;
-
-/* ----------------
- *		AlternativeSubPlanState node
- * ----------------
- */
-typedef struct AlternativeSubPlanState
-{
-	NodeTag		type;
-	AlternativeSubPlan *subplan;	/* expression plan node */
-	List	   *subplans;		/* SubPlanStates of alternative subplans */
-	int			active;			/* list index of the one we're using */
-} AlternativeSubPlanState;
 
 /*
  * DomainConstraintState - one item to check during CoerceToDomain
@@ -1187,8 +1180,13 @@ typedef struct ModifyTableState
 	TupleTableSlot **mt_scans;	/* input tuple corresponding to underlying
 								 * plans */
 	ResultRelInfo *resultRelInfo;	/* per-subplan target relations */
-	ResultRelInfo *rootResultRelInfo;	/* root target relation (partitioned
-										 * table root) */
+
+	/*
+	 * Target relation mentioned in the original statement, used to fire
+	 * statement-level triggers and as the root for tuple routing.
+	 */
+	ResultRelInfo *rootResultRelInfo;
+
 	List	  **mt_arowmarks;	/* per-subplan ExecAuxRowMark lists */
 	EPQState	mt_epqstate;	/* for evaluating EvalPlanQual rechecks */
 	bool		fireBSTriggers; /* do we need to fire stmt triggers? */
@@ -1207,9 +1205,6 @@ typedef struct ModifyTableState
 
 	/* controls transition table population for INSERT...ON CONFLICT UPDATE */
 	struct TransitionCaptureState *mt_oc_transition_capture;
-
-	/* Per plan map for tuple conversion from child to root */
-	TupleConversionMap **mt_per_subplan_tupconv_maps;
 } ModifyTableState;
 
 /* ----------------
@@ -1828,6 +1823,7 @@ typedef struct ForeignScanState
 	ScanState	ss;				/* its first field is NodeTag */
 	ExprState  *fdw_recheck_quals;	/* original quals not in ss.ps.qual */
 	Size		pscan_len;		/* size of parallel coordination information */
+	ResultRelInfo *resultRelInfo;	/* result rel info, if UPDATE or DELETE */
 	/* use struct pointer to avoid including fdwapi.h here */
 	struct FdwRoutine *fdwroutine;
 	void	   *fdw_state;		/* foreign-data wrapper can keep state here */
@@ -2081,10 +2077,10 @@ typedef struct SortState
 typedef struct IncrementalSortGroupInfo
 {
 	int64		groupCount;
-	long		maxDiskSpaceUsed;
-	long		totalDiskSpaceUsed;
-	long		maxMemorySpaceUsed;
-	long		totalMemorySpaceUsed;
+	int64		maxDiskSpaceUsed;
+	int64		totalDiskSpaceUsed;
+	int64		maxMemorySpaceUsed;
+	int64		totalMemorySpaceUsed;
 	bits32		sortMethods;	/* bitmask of TuplesortMethod */
 } IncrementalSortGroupInfo;
 
@@ -2151,6 +2147,27 @@ typedef struct GroupState
 } GroupState;
 
 /* ---------------------
+ *	per-worker aggregate information
+ * ---------------------
+ */
+typedef struct AggregateInstrumentation
+{
+	Size		hash_mem_peak;	/* peak hash table memory usage */
+	uint64		hash_disk_used; /* kB of disk space used */
+	int			hash_batches_used;	/* batches used during entire execution */
+} AggregateInstrumentation;
+
+/* ----------------
+ *	 Shared memory container for per-worker aggregate information
+ * ----------------
+ */
+typedef struct SharedAggInfo
+{
+	int			num_workers;
+	AggregateInstrumentation sinstrument[FLEXIBLE_ARRAY_MEMBER];
+} SharedAggInfo;
+
+/* ---------------------
  *	AggState information
  *
  *	ss.ss_ScanTupleSlot refers to output of underlying plan.
@@ -2197,6 +2214,9 @@ typedef struct AggState
 	int			current_set;	/* The current grouping set being evaluated */
 	Bitmapset  *grouped_cols;	/* grouped cols in current projection */
 	List	   *all_grouped_cols;	/* list of all grouped cols in DESC order */
+	Bitmapset  *colnos_needed;	/* all columns needed from the outer plan */
+	int			max_colno_needed;	/* highest colno needed from outer plan */
+	bool		all_cols_needed;	/* are all cols from outer plan needed? */
 	/* These fields are for grouping set phase data */
 	int			maxsets;		/* The max number of sets in any phase */
 	AggStatePerPhase phases;	/* array of all phases */
@@ -2214,7 +2234,8 @@ typedef struct AggState
 	struct HashTapeInfo *hash_tapeinfo; /* metadata for spill tapes */
 	struct HashAggSpill *hash_spills;	/* HashAggSpill for each grouping set,
 										 * exists only during first pass */
-	TupleTableSlot *hash_spill_slot;	/* slot for reading from spill files */
+	TupleTableSlot *hash_spill_rslot;	/* for reading spill files */
+	TupleTableSlot *hash_spill_wslot;	/* for writing spill files */
 	List	   *hash_batches;	/* hash batches remaining to be processed */
 	bool		hash_ever_spilled;	/* ever spilled during this execution? */
 	bool		hash_spill_mode;	/* we hit a limit during the current batch
@@ -2235,10 +2256,11 @@ typedef struct AggState
 										 * per-group pointers */
 
 	/* support for evaluation of agg input expressions: */
-#define FIELDNO_AGGSTATE_ALL_PERGROUPS 49
+#define FIELDNO_AGGSTATE_ALL_PERGROUPS 53
 	AggStatePerGroup *all_pergroups;	/* array of first ->pergroups, than
 										 * ->hash_pergroup */
 	ProjectionInfo *combinedproj;	/* projection machinery */
+	SharedAggInfo *shared_info; /* one entry per worker */
 } AggState;
 
 /* ----------------

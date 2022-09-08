@@ -3,7 +3,7 @@
  * readfuncs.c
  *	  Reader functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -439,6 +439,44 @@ _readRowMarkClause(void)
 }
 
 /*
+ * _readCTESearchClause
+ */
+static CTESearchClause *
+_readCTESearchClause(void)
+{
+	READ_LOCALS(CTESearchClause);
+
+	READ_NODE_FIELD(search_col_list);
+	READ_BOOL_FIELD(search_breadth_first);
+	READ_STRING_FIELD(search_seq_column);
+	READ_LOCATION_FIELD(location);
+
+	READ_DONE();
+}
+
+/*
+ * _readCTECycleClause
+ */
+static CTECycleClause *
+_readCTECycleClause(void)
+{
+	READ_LOCALS(CTECycleClause);
+
+	READ_NODE_FIELD(cycle_col_list);
+	READ_STRING_FIELD(cycle_mark_column);
+	READ_NODE_FIELD(cycle_mark_value);
+	READ_NODE_FIELD(cycle_mark_default);
+	READ_STRING_FIELD(cycle_path_column);
+	READ_LOCATION_FIELD(location);
+	READ_OID_FIELD(cycle_mark_type);
+	READ_INT_FIELD(cycle_mark_typmod);
+	READ_OID_FIELD(cycle_mark_collation);
+	READ_OID_FIELD(cycle_mark_neop);
+
+	READ_DONE();
+}
+
+/*
  * _readCommonTableExpr
  */
 static CommonTableExpr *
@@ -450,6 +488,8 @@ _readCommonTableExpr(void)
 	READ_NODE_FIELD(aliascolnames);
 	READ_ENUM_FIELD(ctematerialized, CTEMaterialize);
 	READ_NODE_FIELD(ctequery);
+	READ_NODE_FIELD(search_clause);
+	READ_NODE_FIELD(cycle_clause);
 	READ_LOCATION_FIELD(location);
 	READ_BOOL_FIELD(cterecursive);
 	READ_INT_FIELD(cterefcount);
@@ -644,6 +684,8 @@ _readAggref(void)
 	READ_CHAR_FIELD(aggkind);
 	READ_UINT_FIELD(agglevelsup);
 	READ_ENUM_FIELD(aggsplit, AggSplit);
+	READ_INT_FIELD(aggno);
+	READ_INT_FIELD(aggtransno);
 	READ_LOCATION_FIELD(location);
 
 	READ_DONE();
@@ -698,6 +740,7 @@ _readSubscriptingRef(void)
 
 	READ_OID_FIELD(refcontainertype);
 	READ_OID_FIELD(refelemtype);
+	READ_OID_FIELD(refrestype);
 	READ_INT_FIELD(reftypmod);
 	READ_OID_FIELD(refcollid);
 	READ_NODE_FIELD(refupperindexpr);
@@ -1576,7 +1619,6 @@ _readPlannedStmt(void)
 	READ_NODE_FIELD(planTree);
 	READ_NODE_FIELD(rtable);
 	READ_NODE_FIELD(resultRelations);
-	READ_NODE_FIELD(rootResultRelations);
 	READ_NODE_FIELD(appendRelations);
 	READ_NODE_FIELD(subplans);
 	READ_BITMAPSET_FIELD(rewindPlanIDs);
@@ -1675,8 +1717,6 @@ _readModifyTable(void)
 	READ_UINT_FIELD(rootRelation);
 	READ_BOOL_FIELD(partColsUpdated);
 	READ_NODE_FIELD(resultRelations);
-	READ_INT_FIELD(resultRelIndex);
-	READ_INT_FIELD(rootResultRelIndex);
 	READ_NODE_FIELD(plans);
 	READ_NODE_FIELD(withCheckOptionLists);
 	READ_NODE_FIELD(returningLists);
@@ -2053,6 +2093,7 @@ _readForeignScan(void)
 	READ_NODE_FIELD(fdw_recheck_quals);
 	READ_BITMAPSET_FIELD(fs_relids);
 	READ_BOOL_FIELD(fsSystemCol);
+	READ_INT_FIELD(resultRelation);
 
 	READ_DONE();
 }
@@ -2929,6 +2970,10 @@ parseNodeString(void)
 		return_value = _readWindowClause();
 	else if (MATCH("ROWMARKCLAUSE", 13))
 		return_value = _readRowMarkClause();
+	else if (MATCH("CTESEARCHCLAUSE", 15))
+		return_value = _readCTESearchClause();
+	else if (MATCH("CTECYCLECLAUSE", 14))
+		return_value = _readCTECycleClause();
 	else if (MATCH("COMMONTABLEEXPR", 15))
 		return_value = _readCommonTableExpr();
 	else if (MATCH("SETOPERATIONSTMT", 16))
