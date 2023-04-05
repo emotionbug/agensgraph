@@ -809,16 +809,16 @@ transformCypherDeleteClause(ParseState *pstate, CypherClause *clause)
 	AssertArg(clause->prev != NULL);
 
 	/* Merge same mode of DELETE clauses for reducing delete join */
-	while (cypherClauseTag(clause->prev) == T_CypherDeleteClause)
-	{
-		CypherClause	   *prev = (CypherClause *) clause->prev;
-		CypherDeleteClause *prevDel = (CypherDeleteClause *) prev->detail;
-
-		if (prevDel->detach == detail->detach)
-			detail->exprs = list_concat(prevDel->exprs, detail->exprs);
-
-		clause->prev = prev->prev;
-	}
+//	while (cypherClauseTag(clause->prev) == T_CypherDeleteClause)
+//	{
+//		CypherClause	   *prev = (CypherClause *) clause->prev;
+//		CypherDeleteClause *prevDel = (CypherDeleteClause *) prev->detail;
+//
+//		if (prevDel->detach == detail->detach)
+//			detail->exprs = list_concat(prevDel->exprs, detail->exprs);
+//
+//		clause->prev = prev->prev;
+//	}
 
 	qry = makeNode(Query);
 	qry->commandType = CMD_GRAPHWRITE;
