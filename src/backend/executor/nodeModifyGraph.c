@@ -308,6 +308,12 @@ ExecInitModifyGraph(ModifyGraph *mgplan, EState *estate, int eflags)
 	}
 
 	mgstate->exprs = ExecInitGraphDelExprs(mgplan->exprs, mgstate);
+	int expr_length = list_length(mgstate->exprs);
+	int i=0;
+	mgstate->exprs_attns = palloc(sizeof (AttrNumber) * list_length(mgstate->exprs));
+	for(i=0;i<expr_length;i++){
+		*(mgstate->exprs_attns+i) = -1;
+	}
 	mgstate->sets = ExecInitGraphSets(mgplan->sets, mgstate);
 
 	initGraphWRStats(mgstate, mgplan->operation);
@@ -966,6 +972,7 @@ ExecDeleteGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 	ExprContext *econtext = mgstate->ps.ps_ExprContext;
 	TupleDesc	tupDesc = slot->tts_tupleDescriptor;
 	ListCell   *le;
+	int i=0;
 
 	ResetExprContext(econtext);
 
@@ -978,8 +985,14 @@ ExecDeleteGraph(ModifyGraphState *mgstate, TupleTableSlot *slot)
 		Oid			type;
 		Datum		elem;
 		bool		isNull;
-		AttrNumber	attno = findAttrInSlotByName(slot, gde->variable);
-
+		AttrNumber attno = *(mgstate->exprs_attns + i);
+		if (attno < 0)
+		{
+			attno = findAttrInSlotByName(slot, gde->variable);
+			*(mgstate->exprs_attns + i) = attno;
+		}
+		i++;
+		
 		type = exprType((Node *) gde->elem);
 		if (!(type == VERTEXOID || type == EDGEOID ||
 			  type == VERTEXARRAYOID || type == EDGEARRAYOID))

@@ -2612,6 +2612,7 @@ typedef struct ModifyGraphState
 	List	   *pattern;		/* graph pattern (list of paths) for CREATE
 								   with `es_prop_map` */
 	List	   *exprs;			/* expression state list for DELETE */
+	AttrNumber *exprs_attns;
 	List	   *sets;			/* list of GraphSetProp's for SET/REMOVE */
 	HTAB	   *elemTable;
 	Tuplestorestate *tuplestorestate;
